@@ -1,0 +1,40 @@
+[
+  {
+    "namespace": "customColumn",
+    "functions": [
+      {
+        "name": "init",
+        "type": "function",
+        "async": true,
+        "parameters": []
+      },
+      {
+        "name": "provideSnippet",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "msgId",
+            "type": "integer"
+          },
+          {
+            "name": "snippet",
+            "type": "string"
+          }
+        ]
+      }
+    ],
+    "events": [
+      {
+        "name": "onSnippetRequested",
+        "type": "function",
+        "parameters": [
+          {
+            "name": "msgId",
+            "type": "integer"
+          }
+        ]
+      }
+    ]
+  }
+]
