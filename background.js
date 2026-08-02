@@ -1,8 +1,15 @@
 async function main() {
   console.log("Message Excerpt Card View addon starting...");
   try {
+    let memoryCache = new Map();
+
     browser.customColumn.onSnippetRequested.addListener(async (msgId) => {
         try {
+            if (memoryCache.has(msgId)) {
+                await browser.customColumn.provideSnippet(msgId, memoryCache.get(msgId));
+                return;
+            }
+
             let full = await browser.messages.getFull(msgId);
             
             let extractText = (part) => {
@@ -36,6 +43,9 @@ async function main() {
                        
             let cleanText = text.replace(/--[\w=-]+/g, '').trim();
             let snippet = cleanText.substring(0, 150) + (cleanText.length > 150 ? "..." : "");
+            
+            memoryCache.set(msgId, snippet);
+            if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
             
             await browser.customColumn.provideSnippet(msgId, snippet);
         } catch (e) {
