@@ -40,7 +40,7 @@ const ExtensionSupport =
 
 function logMsg(msg) {
   if (Services && Services.console) {
-    Services.console.logStringMessage("CustomColumn: " + msg);
+    Services.console.logStringMessage("messageExcerpts: " + msg);
   }
 }
 
@@ -77,6 +77,105 @@ function findShadowContainerWithCards(root) {
   } catch (e) {}
 
   return null;
+}
+
+async function waitForCardsContainer(win) {
+  let attempts = 0;
+  const NUM_ATTEMPTS = 14;
+
+  while (attempts < NUM_ATTEMPTS) {
+    const cardsContainer = findShadowContainerWithCards(
+      win.document.documentElement,
+    );
+    if (cardsContainer) {
+      return cardsContainer;
+    }
+    attempts++;
+    if (attempts < NUM_ATTEMPTS) {
+      await new Promise((resolve) =>
+        win.setTimeout(resolve, Math.pow(2, attempts) * 50),
+      );
+    }
+  }
+
+  logMsg(
+    "Could not find cards container after " +
+      (Math.pow(2, NUM_ATTEMPTS + 1) - 1) * 50 +
+      " ms",
+  );
+  return null;
+}
+
+/**
+ * Sets up the DOM observers for the provided 3pane window.
+ *
+ * @param {Window} win the mail 3 pane window
+ */
+async function setupCardView(
+  win,
+  activeStates,
+  extension,
+  snippetCallbacks,
+  extensionState,
+) {
+  const foundData = await waitForCardsContainer(win);
+  const state = { observer: null, timer: null, win: win };
+  activeStates.add(state);
+
+  const container = foundData.root;
+
+  // Keep the Event Page alive by firing a dummy request every 10 seconds.
+  // This prevents Thunderbird MV3 from suspending the background script,
+  // bypassing all the dead-context wakeup bugs!
+  state.timer = win.setInterval(() => {
+    if (extensionState.fireHeartbeat) {
+      try {
+        extensionState.fireHeartbeat.async();
+      } catch (e) {}
+    }
+  }, 10000);
+
+  // Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
+  state.observer = new win.MutationObserver((mutations) => {
+    const cardsToUpdate = new Set();
+    for (const m of mutations) {
+      if (m.type === "childList") {
+        m.addedNodes.forEach((node) => {
+          if (node.nodeType === win.Node.ELEMENT_NODE) {
+            if (node.getAttribute("is") === "thread-card") {
+              cardsToUpdate.add(node);
+            } else if (node.querySelectorAll) {
+              const cards = node.querySelectorAll('tr[is="thread-card"]');
+              cards.forEach((c) => cardsToUpdate.add(c));
+            }
+          }
+        });
+      } else if (m.type === "attributes" && m.target) {
+        const node = m.target;
+        if (node.nodeType === win.Node.ELEMENT_NODE) {
+          if (node.getAttribute("is") === "thread-card") {
+            cardsToUpdate.add(node);
+          } else {
+            const card = node.closest('tr[is="thread-card"]');
+            if (card) cardsToUpdate.add(card);
+          }
+        }
+      }
+    }
+    cardsToUpdate.forEach((c) =>
+      addExcerptToCard(c, extension, snippetCallbacks, extensionState),
+    );
+  });
+  state.observer.observe(container, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["id", "aria-label", "data-row"],
+  });
+
+  // Initialize existing cards
+  for (const card of foundData.cards)
+    addExcerptToCard(card, extension, snippetCallbacks, extensionState);
 }
 
 /**
@@ -135,7 +234,9 @@ function addExcerptToCard(
     excerptSpan.textContent = "(Loading excerpt...)";
 
     // Append to the subject container so it appears natively inline
-    const subjectContainer = cardElement.querySelector(".thread-card-subject-container");
+    const subjectContainer = cardElement.querySelector(
+      ".thread-card-subject-container",
+    );
     if (!subjectContainer) {
       logMsg("No subject container found for card: " + cardElement.outerHTML);
       return;
@@ -151,13 +252,35 @@ function addExcerptToCard(
     });
 
     // Emit the request. Background.js will handle deduping and caching.
-    extensionState.fireSnippetRequested.async(msgId);
+    if (extensionState.fireSnippetRequested) {
+      try {
+        extensionState.fireSnippetRequested.async(msgId);
+      } catch (e) {
+        // If the fire object was invalidated by the framework (Event Page suspended),
+        // we'll catch the error and queue it instead.
+        queueAndWakeup(msgId);
+      }
+    } else {
+      queueAndWakeup(msgId);
+    }
+
+    function queueAndWakeup(id) {
+      if (!extensionState.pendingRequests) {
+        extensionState.pendingRequests = new Set();
+      }
+      extensionState.pendingRequests.add(id);
+      logMsg(
+        "Queued snippet request for " +
+          id +
+          " because background script is detached.",
+      );
+    }
   } catch (e) {
     logMsg("Failed to add excerpt to card: " + e);
   }
 }
 
-this.customColumn = class customColumn extends ExtensionAPI {
+this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
   onShutdown(isAppShutdown) {
     if (isAppShutdown) return;
 
@@ -169,6 +292,7 @@ this.customColumn = class customColumn extends ExtensionAPI {
 
     if (this.extension && this.extension.activeStates) {
       for (const state of this.extension.activeStates) {
+        if (state.timer) state.win.clearInterval(state.timer);
         if (state.observer) state.observer.disconnect();
       }
       this.extension.activeStates.clear();
@@ -208,14 +332,18 @@ this.customColumn = class customColumn extends ExtensionAPI {
 
   getAPI(context) {
     const extension = context.extension;
+
+    const activeStates = new Set();
+    context.extension.activeStates = activeStates;
+
     const snippetCallbacks = new Map();
-    const extensionState = { fireSnippetRequested: null };
+    const extensionState = { fireSnippetRequested: null, fireHeartbeat: null };
 
     // =================================================================
     // API Export
     // =================================================================
     return {
-      customColumn: {
+      messageExcerpts: {
         /**
          * Called by background.js to provide the snippet back to the UI.
          */
@@ -233,10 +361,6 @@ this.customColumn = class customColumn extends ExtensionAPI {
         async init() {
           logMsg("init() called in backend!");
 
-          // Use a Set to bypass XrayWrapper identity issues during shutdown
-          const activeStates = new Set();
-          context.extension.activeStates = activeStates;
-
           ExtensionSupport.registerWindowListener(extension.id, {
             chromeURLs: [
               "chrome://messenger/content/messenger.xhtml",
@@ -244,13 +368,20 @@ this.customColumn = class customColumn extends ExtensionAPI {
             ],
             onLoadWindow(win) {
               logMsg("3-pane window loaded, setting up card view.");
-              setupCardView(win, activeStates);
+              setupCardView(
+                win,
+                activeStates,
+                extension,
+                snippetCallbacks,
+                extensionState,
+              );
             },
             onUnloadWindow(win) {
               logMsg("Unloading extension from window.");
               for (const state of activeStates) {
                 // If it's the exact same wrapper, or we just want to clear everything
                 if (state.win === win) {
+                  if (state.timer) win.clearInterval(state.timer);
                   if (state.observer) state.observer.disconnect();
                   activeStates.delete(state);
                 }
@@ -286,100 +417,6 @@ this.customColumn = class customColumn extends ExtensionAPI {
           });
 
           return Promise.resolve("Backend initialized.");
-
-          async function waitForCardsContainer(win) {
-            let attempts = 0;
-            const NUM_ATTEMPTS = 14
-
-            while (attempts < NUM_ATTEMPTS) {
-              const cardsContainer = findShadowContainerWithCards(
-                win.document.documentElement,
-              );
-              if (cardsContainer) {
-                return cardsContainer;
-              }
-              attempts++;
-              if (attempts < NUM_ATTEMPTS) {
-                await new Promise((resolve) =>
-                  win.setTimeout(resolve, Math.pow(2, attempts) * 50),
-                );
-              }
-            }
-
-            logMsg(
-              "Could not find cards container after " +
-                (Math.pow(2, NUM_ATTEMPTS + 1) - 1) * 50 +
-                " ms",
-            );
-            return null;
-          }
-
-          /**
-           * Sets up the DOM observers for the provided 3pane window.
-           *
-           * @param {Window} win the mail 3 pane window
-           */
-          async function setupCardView(win, activeStates) {
-            const foundData = await waitForCardsContainer(win);
-            const state = { observer: null, win: win };
-            activeStates.add(state);
-
-            const container = foundData.root;
-
-            // Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
-            state.observer = new win.MutationObserver((mutations) => {
-              const cardsToUpdate = new Set();
-              for (const m of mutations) {
-                if (m.type === "childList") {
-                  m.addedNodes.forEach((node) => {
-                    if (node.nodeType === win.Node.ELEMENT_NODE) {
-                      if (node.getAttribute("is") === "thread-card") {
-                        cardsToUpdate.add(node);
-                      } else if (node.querySelectorAll) {
-                        const cards = node.querySelectorAll(
-                          'tr[is="thread-card"]',
-                        );
-                        cards.forEach((c) => cardsToUpdate.add(c));
-                      }
-                    }
-                  });
-                } else if (m.type === "attributes" && m.target) {
-                  const node = m.target;
-                  if (node.nodeType === win.Node.ELEMENT_NODE) {
-                    if (node.getAttribute("is") === "thread-card") {
-                      cardsToUpdate.add(node);
-                    } else {
-                      const card = node.closest('tr[is="thread-card"]');
-                      if (card) cardsToUpdate.add(card);
-                    }
-                  }
-                }
-              }
-              cardsToUpdate.forEach((c) =>
-                addExcerptToCard(
-                  c,
-                  extension,
-                  snippetCallbacks,
-                  extensionState,
-                ),
-              );
-            });
-            state.observer.observe(container, {
-              childList: true,
-              subtree: true,
-              attributes: true,
-              attributeFilter: ["id", "aria-label", "data-row"],
-            });
-
-            // Initialize existing cards
-            for (const card of foundData.cards)
-              addExcerptToCard(
-                card,
-                extension,
-                snippetCallbacks,
-                extensionState,
-              );
-          }
         },
 
         /**
@@ -387,12 +424,35 @@ this.customColumn = class customColumn extends ExtensionAPI {
          */
         onSnippetRequested: new ExtensionCommon.EventManager({
           context,
-          name: "customColumn.onSnippetRequested",
+          name: "messageExcerpts.onSnippetRequested",
           register(fire) {
             logMsg("Snippet request listener registered by background script!");
             extensionState.fireSnippetRequested = fire;
+
+            // Flush any requests that came in before registration
+            if (extensionState.pendingRequests) {
+              for (const msgId of extensionState.pendingRequests) {
+                fire.async(msgId);
+              }
+              extensionState.pendingRequests.clear();
+            }
+
             return () => {
+              logMsg(
+                "Snippet request listener cleanup called (Event Page suspended).",
+              );
               extensionState.fireSnippetRequested = null;
+            };
+          },
+        }).api(),
+
+        onHeartbeat: new ExtensionCommon.EventManager({
+          context,
+          name: "messageExcerpts.onHeartbeat",
+          register(fire) {
+            extensionState.fireHeartbeat = fire;
+            return () => {
+              extensionState.fireHeartbeat = null;
             };
           },
         }).api(),

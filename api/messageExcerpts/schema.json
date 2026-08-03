@@ -1,6 +1,6 @@
 [
   {
-    "namespace": "customColumn",
+    "namespace": "messageExcerpts",
     "functions": [
       {
         "name": "init",
@@ -34,6 +34,11 @@
             "type": "integer"
           }
         ]
+      },
+      {
+        "name": "onHeartbeat",
+        "type": "function",
+        "parameters": []
       }
     ]
   }

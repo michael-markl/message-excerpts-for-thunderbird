@@ -17,12 +17,12 @@
     "messagesRead"
   ],
   "experiment_apis": {
-    "customColumn": {
-      "schema": "api/customColumn/schema.json",
+    "messageExcerpts": {
+      "schema": "api/messageExcerpts/schema.json",
       "parent": {
         "scopes": ["addon_parent"],
-        "paths": [["customColumn"]],
-        "script": "api/customColumn/implementation.js"
+        "paths": [["messageExcerpts"]],
+        "script": "api/messageExcerpts/implementation.js"
       }
     }
   }

@@ -9,7 +9,7 @@
  * but lacks access to standard WebExtension APIs.
  *
  * This script bridges that gap by:
- * 1. Initializing the Custom Column Experiment API.
+ * 1. Initializing the Message Excerpt Experiment API.
  * 2. Listening for `onSnippetRequested` events fired from the UI.
  * 3. Fetching the full message content using `browser.messages.getFull`.
  * 4. Parsing the MIME structure to extract plain text.
@@ -83,10 +83,14 @@ async function main() {
     const memoryCache = new Map();
     const pendingRequests = new Map();
 
-    browser.customColumn.onSnippetRequested.addListener(async (msgId) => {
+    browser.messageExcerpts.onHeartbeat.addListener(() => {
+      // Just receiving this event keeps the Event Page alive. No action needed.
+    });
+
+    browser.messageExcerpts.onSnippetRequested.addListener(async (msgId) => {
       try {
         if (memoryCache.has(msgId)) {
-          browser.customColumn.provideSnippet(
+          browser.messageExcerpts.provideSnippet(
             msgId,
             memoryCache.get(msgId),
           );
@@ -106,11 +110,11 @@ async function main() {
         if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
 
         pendingRequests.delete(msgId);
-        browser.customColumn.provideSnippet(msgId, snippet);
+        browser.messageExcerpts.provideSnippet(msgId, snippet);
       } catch (e) {
         console.error("Failed to get snippet:", e);
         pendingRequests.delete(msgId);
-        browser.customColumn.provideSnippet(
+        browser.messageExcerpts.provideSnippet(
           msgId,
           "(Snippet fetch error)",
         );
@@ -118,10 +122,10 @@ async function main() {
     });
 
     // Initialize our experiment
-    await browser.customColumn.init();
-    console.log("customColumn init finished.");
+    await browser.messageExcerpts.init();
+    console.log("messageExcerpts init finished.");
   } catch (err) {
-    console.error("Failed to initialize customColumn API:", err);
+    console.error("Failed to initialize messageExcerpts API:", err);
   }
 }
 
