@@ -23,11 +23,16 @@
 
 const ExtensionAPI =
   globalThis.ExtensionAPI ||
-  ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm")
+  ChromeUtils.importESModule("resource://gre/modules/ExtensionCommon.sys.mjs")
     .ExtensionCommon.ExtensionAPI;
 const Services =
   globalThis.Services ||
-  ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
+  ChromeUtils.importESModule("resource://gre/modules/Services.sys.mjs")
+    .Services;
+const ExtensionSupport =
+  globalThis.ExtensionSupport ||
+  ChromeUtils.importESModule("resource:///modules/ExtensionSupport.sys.mjs")
+    .ExtensionSupport;
 
 // =================================================================
 // Global State and Helper Functions
@@ -197,6 +202,56 @@ function addExcerptToCard(
 }
 
 this.customColumn = class customColumn extends ExtensionAPI {
+  onShutdown(isAppShutdown) {
+    if (isAppShutdown) return;
+
+    logMsg("Extension shutting down, forcing cleanup.");
+    
+    try {
+      ExtensionSupport.unregisterWindowListener(this.extension.id);
+    } catch (e) {}
+
+    if (this.extension && this.extension.activeStates) {
+      for (const state of this.extension.activeStates) {
+        if (state.timer) state.win.clearInterval(state.timer);
+        if (state.scanner) state.win.clearInterval(state.scanner);
+        if (state.observer) state.observer.disconnect();
+      }
+      this.extension.activeStates.clear();
+    }
+
+    const removeAllExcerpts = (rootNode) => {
+      if (!rootNode || !rootNode.querySelectorAll) return;
+      
+      const excerpts = rootNode.querySelectorAll(".custom-excerpt");
+      for (let i = 0; i < excerpts.length; i++) {
+        excerpts[i].remove();
+      }
+
+      const iframes = rootNode.querySelectorAll("iframe, browser");
+      for (let i = 0; i < iframes.length; i++) {
+        try {
+          if (iframes[i].contentDocument) {
+            removeAllExcerpts(iframes[i].contentDocument);
+          }
+        } catch (e) {} // Cross-origin frames can throw on access
+      }
+
+      const allElements = rootNode.querySelectorAll("*");
+      for (let i = 0; i < allElements.length; i++) {
+        if (allElements[i].shadowRoot) {
+          removeAllExcerpts(allElements[i].shadowRoot);
+        }
+      }
+    };
+
+    const allWindows = Services.wm.getEnumerator("mail:3pane");
+    while (allWindows.hasMoreElements()) {
+      const win = allWindows.getNext();
+      removeAllExcerpts(win.document.documentElement);
+    }
+  }
+
   getAPI(context) {
     const extension = context.extension;
     const snippetCallbacks = new Map();
@@ -224,49 +279,60 @@ this.customColumn = class customColumn extends ExtensionAPI {
         async init() {
           logMsg("init() called in backend!");
 
-          // Wait for 3pane window to load
-          const windowListener = {
-            onOpenWindow(xulWindow) {
-              const win = xulWindow
-                .QueryInterface(Ci.nsIInterfaceRequestor)
-                .getInterface(Ci.nsIDOMWindow);
-              win.addEventListener(
-                "load",
-                function listener() {
-                  win.removeEventListener("load", listener, false);
-                  if (
-                    win.document.documentElement.getAttribute("windowtype") ===
-                    "mail:3pane"
-                  ) {
-                    setupCardView(win);
-                  }
-                },
-                false,
-              );
+          // Use a Set to bypass XrayWrapper identity issues during shutdown
+          const activeStates = new Set();
+          context.extension.activeStates = activeStates;
+
+          ExtensionSupport.registerWindowListener(extension.id, {
+            chromeURLs: [
+              "chrome://messenger/content/messenger.xhtml",
+              "chrome://messenger/content/messenger.xul",
+            ],
+            onLoadWindow(win) {
+              logMsg("3-pane window loaded, setting up card view.");
+              setupCardView(win, activeStates);
             },
-            onCloseWindow() {},
-            onWindowTitleChange() {},
-          };
+            onUnloadWindow(win) {
+              logMsg("Unloading extension from window.");
+              for (const state of activeStates) {
+                // If it's the exact same wrapper, or we just want to clear everything
+                if (state.win === win) {
+                  if (state.timer) win.clearInterval(state.timer);
+                  if (state.scanner) win.clearInterval(state.scanner);
+                  if (state.observer) state.observer.disconnect();
+                  activeStates.delete(state);
+                }
+              }
+              
+              // Remove injected UI
+              function removeAllExcerpts(rootNode) {
+                if (!rootNode || !rootNode.querySelectorAll) return;
 
-          Services.wm.addListener(windowListener);
+                const excerpts = rootNode.querySelectorAll(".custom-excerpt");
+                for (let i = 0; i < excerpts.length; i++) {
+                  excerpts[i].remove();
+                }
 
-          // Check existing windows
+                const iframes = rootNode.querySelectorAll("iframe, browser");
+                for (let i = 0; i < iframes.length; i++) {
+                  try {
+                    if (iframes[i].contentDocument) {
+                      removeAllExcerpts(iframes[i].contentDocument);
+                    }
+                  } catch (e) {} // Cross-origin frames can throw on access
+                }
 
-          const allWindows = Services.wm.getEnumerator("mail:3pane");
-          let found3Pane = false;
-          while (allWindows.hasMoreElements()) {
-            const win = allWindows.getNext();
-            if (
-              win.document.documentElement.getAttribute("windowtype") ===
-              "mail:3pane"
-            ) {
-              found3Pane = true;
-              setupCardView(win);
-            }
-          }
+                const allElements = rootNode.querySelectorAll("*");
+                for (let i = 0; i < allElements.length; i++) {
+                  if (allElements[i].shadowRoot) {
+                    removeAllExcerpts(allElements[i].shadowRoot);
+                  }
+                }
+              }
+              removeAllExcerpts(win.document.documentElement);
+            },
+          });
 
-          if (!found3Pane)
-            logMsg("WARNING: No mail:3pane window was found during init.");
           return Promise.resolve("Backend initialized.");
 
           /**
@@ -274,11 +340,14 @@ this.customColumn = class customColumn extends ExtensionAPI {
            *
            * @param {Window} win the mail 3 pane window
            */
-          function setupCardView(win) {
+          function setupCardView(win, activeStates) {
             let attempts = 0;
             let setupDone = false;
 
-            const timer = win.setInterval(() => {
+            const state = { timer: null, scanner: null, observer: null, win: win };
+            activeStates.add(state);
+
+            state.timer = win.setInterval(() => {
               if (setupDone) return;
               attempts++;
 
@@ -291,14 +360,16 @@ this.customColumn = class customColumn extends ExtensionAPI {
                   logMsg(
                     "Gave up waiting for cards to appear after 10 seconds.",
                   );
-                  win.clearInterval(timer);
+                  win.clearInterval(state.timer);
+                  state.timer = null;
                   return;
                 }
                 return;
               }
 
               setupDone = true;
-              win.clearInterval(timer);
+              win.clearInterval(state.timer);
+              state.timer = null;
               const container = foundData.root;
               logMsg(
                 "Successfully injected into container. Cards found: " +
@@ -306,7 +377,7 @@ this.customColumn = class customColumn extends ExtensionAPI {
               );
 
               // 1. Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
-              const observer = new win.MutationObserver((mutations) => {
+              state.observer = new win.MutationObserver((mutations) => {
                 const cardsToUpdate = new Set();
                 for (const m of mutations) {
                   if (m.type === "childList") {
@@ -355,7 +426,7 @@ this.customColumn = class customColumn extends ExtensionAPI {
                   ),
                 );
               });
-              observer.observe(container, {
+              state.observer.observe(container, {
                 childList: true,
                 subtree: true,
                 attributes: true,
@@ -363,7 +434,7 @@ this.customColumn = class customColumn extends ExtensionAPI {
               });
 
               // 2. Periodic Scanner: Bulletproof fallback for virtualized list edge cases
-              win.setInterval(() => {
+              state.scanner = win.setInterval(() => {
                 try {
                   const cards = container.querySelectorAll(
                     '.card-container, tr[is="thread-card"]',
