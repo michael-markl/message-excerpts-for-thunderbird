@@ -21,16 +21,16 @@
 //    and then sends the snippet back to the UI via `provideSnippet()`.
 // =====================================================================
 
-var myExtensionAPI = globalThis.ExtensionAPI || ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm").ExtensionCommon.ExtensionAPI;
-var myServices = globalThis.Services || ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
+const myExtensionAPI = globalThis.ExtensionAPI || ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm").ExtensionCommon.ExtensionAPI;
+const myServices = globalThis.Services || ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
 
-var customColumn = class extends myExtensionAPI {
+this.customColumn = class customColumn extends myExtensionAPI {
   getAPI(context) {
-    let extension = context.extension;
+    const extension = context.extension;
     
     // Map to hold callbacks so we know where to place the snippet once fetched
     // Keeping it inside the getAPI closure is much safer than attaching to DOM windows
-    let snippetCallbacks = new Map();
+    const snippetCallbacks = new Map();
     
     // Reference to the EventManager fire function for sending messages to background.js
     let fireSnippetRequested = null;
@@ -53,25 +53,25 @@ var customColumn = class extends myExtensionAPI {
       if (!root) return null;
       
       try {
-         let cards = Array.from(root.querySelectorAll('.card-container, tr[is="thread-card"]'));
+         const cards = Array.from(root.querySelectorAll('.card-container, tr[is="thread-card"]'));
          if (cards.length > 0) return { root: root, cards: cards };
       } catch(e) {}
       
       try {
-         let iframes = root.querySelectorAll('iframe, browser');
-         for (let frame of iframes) {
+         const iframes = root.querySelectorAll('iframe, browser');
+         for (const frame of iframes) {
            if (frame.contentDocument) {
-              let result = findShadowContainerWithCards(frame.contentDocument);
+              const result = findShadowContainerWithCards(frame.contentDocument);
               if (result) return result;
            }
          }
       } catch(e) {}
       
       try {
-         let allElements = root.querySelectorAll('*');
-         for (let el of allElements) {
+         const allElements = root.querySelectorAll('*');
+         for (const el of allElements) {
            if (el.shadowRoot) {
-             let result = findShadowContainerWithCards(el.shadowRoot);
+             const result = findShadowContainerWithCards(el.shadowRoot);
              if (result) return result;
            }
          }
@@ -86,7 +86,7 @@ var customColumn = class extends myExtensionAPI {
      */
     function addExcerptToCard(cardElement) {
       try {
-         let rowElement = cardElement.closest("tr") || cardElement;
+         const rowElement = cardElement.closest("tr") || cardElement;
          let rowIndex = null;
          
          // Extract the row index from attributes or ID
@@ -100,7 +100,7 @@ var customColumn = class extends myExtensionAPI {
          
          // Retrieve the XPCOM message header
          let msgHdr = null;
-         let localWindow = cardElement.ownerDocument ? cardElement.ownerDocument.defaultView : null;
+         const localWindow = cardElement.ownerDocument ? cardElement.ownerDocument.defaultView : null;
          
          if (rowIndex !== null && rowElement && rowElement.view && typeof rowElement.view.getMsgHdrAt === "function") {
            msgHdr = rowElement.view.getMsgHdrAt(parseInt(rowIndex, 10));
@@ -124,7 +124,7 @@ var customColumn = class extends myExtensionAPI {
          // Virtualized Row Recycling Handler
          // Check if this row already has the correct excerpt loaded
          // -------------------------------------------------------------
-         let existingExcerpt = cardElement.querySelector('.custom-excerpt');
+         const existingExcerpt = cardElement.querySelector('.custom-excerpt');
          if (existingExcerpt) {
              if (msgId && String(existingExcerpt.dataset.msgId) === String(msgId)) {
                  return; // This row already has the correct excerpt.
@@ -134,14 +134,14 @@ var customColumn = class extends myExtensionAPI {
          }
          
          // Create the new excerpt element
-         let excerptDiv = cardElement.ownerDocument.createElement("span");
+         const excerptDiv = cardElement.ownerDocument.createElement("span");
          excerptDiv.className = "custom-excerpt";
          if (msgId) excerptDiv.dataset.msgId = msgId;
-         excerptDiv.style.cssText = "display: inline-block; flex: 1; margin-left: 8px; color: GrayText; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;";
+         excerptDiv.style.cssText = "margin-left: 8px; color: GrayText; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;";
          excerptDiv.textContent = "(Loading excerpt...)";
          
          // Append to the subject container so it appears natively inline
-         let subjectContainer = cardElement.querySelector('.thread-card-subject-container') || cardElement.querySelector('.subject').parentNode;
+         const subjectContainer = cardElement.querySelector('.thread-card-subject-container') || cardElement.querySelector('.subject').parentNode;
          if (subjectContainer) {
              subjectContainer.appendChild(excerptDiv);
          } else {
@@ -182,7 +182,7 @@ var customColumn = class extends myExtensionAPI {
          */
         async provideSnippet(msgId, snippet) {
             if (snippetCallbacks.has(msgId)) {
-                let cb = snippetCallbacks.get(msgId);
+                const cb = snippetCallbacks.get(msgId);
                 cb(snippet);
                 snippetCallbacks.delete(msgId);
             }
@@ -196,9 +196,9 @@ var customColumn = class extends myExtensionAPI {
             logMsg("init() called in backend!");
             
             // Wait for 3pane window to load
-            let windowListener = {
+            const windowListener = {
               onOpenWindow(xulWindow) {
-                let win = xulWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
+                const win = xulWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
                 win.addEventListener("load", function listener() {
                   win.removeEventListener("load", listener, false);
                   if (win.document.documentElement.getAttribute("windowtype") === "mail:3pane") {
@@ -213,10 +213,10 @@ var customColumn = class extends myExtensionAPI {
             myServices.wm.addListener(windowListener);
             
             // Check existing windows
-            let allWindows = myServices.wm.getEnumerator("mail:3pane");
+            const allWindows = myServices.wm.getEnumerator("mail:3pane");
             let found3Pane = false;
             while (allWindows.hasMoreElements()) {
-              let win = allWindows.getNext();
+              const win = allWindows.getNext();
               if (win.document.documentElement.getAttribute("windowtype") === "mail:3pane") {
                 found3Pane = true;
                 setupCardView(win);
@@ -233,47 +233,48 @@ var customColumn = class extends myExtensionAPI {
               let attempts = 0;
               let setupDone = false;
               
-              function attemptSetup() {
+              const timer = win.setInterval(() => {
                 if (setupDone) return;
                 attempts++;
                 
-                let foundData = findShadowContainerWithCards(win.document.documentElement);
+                const foundData = findShadowContainerWithCards(win.document.documentElement);
                 
                 if (!foundData) {
                   if (attempts > 20) {
                      logMsg("Gave up waiting for cards to appear after 10 seconds.");
+                     win.clearInterval(timer);
                      return;
                   }
-                  win.setTimeout(attemptSetup, 500);
                   return;
                 }
                 
                 setupDone = true;
-                let container = foundData.root;
+                win.clearInterval(timer);
+                const container = foundData.root;
                 logMsg("Successfully injected into container. Cards found: " + foundData.cards.length);
 
                 // 1. Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
-                let observer = new win.MutationObserver((mutations) => {
-                 let cardsToUpdate = new Set();
-                 for (let m of mutations) {
+                const observer = new win.MutationObserver((mutations) => {
+                 const cardsToUpdate = new Set();
+                 for (const m of mutations) {
                      if (m.type === 'childList') {
                          m.addedNodes.forEach(node => {
                              if (node.nodeType === 1) {
                                  if (node.classList && (node.classList.contains("card-container") || node.tagName === "TR" || node.getAttribute("is") === "thread-card")) {
                                      cardsToUpdate.add(node);
                                  } else if (node.querySelectorAll) {
-                                     let cards = node.querySelectorAll('.card-container, tr[is="thread-card"]');
+                                     const cards = node.querySelectorAll('.card-container, tr[is="thread-card"]');
                                      cards.forEach(c => cardsToUpdate.add(c));
                                  }
                              }
                          });
                      } else if (m.type === 'attributes' && m.target) {
-                         let node = m.target;
+                         const node = m.target;
                          if (node.nodeType === 1) {
                              if (node.classList && (node.classList.contains("card-container") || node.tagName === "TR" || node.getAttribute("is") === "thread-card")) {
                                  cardsToUpdate.add(node);
                              } else {
-                                 let card = node.closest('.card-container, tr[is="thread-card"]');
+                                 const card = node.closest('.card-container, tr[is="thread-card"]');
                                  if (card) cardsToUpdate.add(card);
                              }
                          }
@@ -286,16 +287,14 @@ var customColumn = class extends myExtensionAPI {
                 // 2. Periodic Scanner: Bulletproof fallback for virtualized list edge cases
                 win.setInterval(() => {
                    try {
-                       let cards = container.querySelectorAll('.card-container, tr[is="thread-card"]');
+                       const cards = container.querySelectorAll('.card-container, tr[is="thread-card"]');
                        cards.forEach(c => addExcerptToCard(c));
                    } catch(e){}
                 }, 500);
                 
                 // Initialize existing cards
-                for (let card of foundData.cards) addExcerptToCard(card);
-              }
-              
-              attemptSetup();
+                for (const card of foundData.cards) addExcerptToCard(card);
+              }, 500);
             }
           });
         },
