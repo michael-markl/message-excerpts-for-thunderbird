@@ -214,7 +214,6 @@ this.customColumn = class customColumn extends ExtensionAPI {
     if (this.extension && this.extension.activeStates) {
       for (const state of this.extension.activeStates) {
         if (state.timer) state.win.clearInterval(state.timer);
-        if (state.scanner) state.win.clearInterval(state.scanner);
         if (state.observer) state.observer.disconnect();
       }
       this.extension.activeStates.clear();
@@ -298,7 +297,6 @@ this.customColumn = class customColumn extends ExtensionAPI {
                 // If it's the exact same wrapper, or we just want to clear everything
                 if (state.win === win) {
                   if (state.timer) win.clearInterval(state.timer);
-                  if (state.scanner) win.clearInterval(state.scanner);
                   if (state.observer) state.observer.disconnect();
                   activeStates.delete(state);
                 }
@@ -344,7 +342,7 @@ this.customColumn = class customColumn extends ExtensionAPI {
             let attempts = 0;
             let setupDone = false;
 
-            const state = { timer: null, scanner: null, observer: null, win: win };
+            const state = { timer: null, observer: null, win: win };
             activeStates.add(state);
 
             state.timer = win.setInterval(() => {
@@ -432,23 +430,6 @@ this.customColumn = class customColumn extends ExtensionAPI {
                 attributes: true,
                 attributeFilter: ["id", "aria-label", "data-row"],
               });
-
-              // 2. Periodic Scanner: Bulletproof fallback for virtualized list edge cases
-              state.scanner = win.setInterval(() => {
-                try {
-                  const cards = container.querySelectorAll(
-                    '.card-container, tr[is="thread-card"]',
-                  );
-                  cards.forEach((c) =>
-                    addExcerptToCard(
-                      c,
-                      extension,
-                      snippetCallbacks,
-                      extensionState,
-                    ),
-                  );
-                } catch (e) {}
-              }, 500);
 
               // Initialize existing cards
               for (const card of foundData.cards)
