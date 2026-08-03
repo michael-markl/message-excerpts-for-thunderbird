@@ -1,0 +1,25 @@
+{
+  "name": "thunderbird-excerpts",
+  "version": "0.1.0",
+  "description": "Extension for displaying message excerpts next to the subject in your Thunderbird inbox!",
+  "main": "\"\"",
+  "scripts": {
+    "build": "rm addon.xpi ; zip -r addon.xpi manifest.json background.js api/*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michael-markl/thunderbird-message-excerpts.git"
+  },
+  "keywords": [
+    "thunderbird"
+  ],
+  "author": "Michael Markl",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/michael-markl/thunderbird-message-excerpts/issues"
+  },
+  "homepage": "https://github.com/michael-markl/thunderbird-message-excerpts#readme",
+  "dependencies": {
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,10 +1,10 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Message Excerpt Card View",
   "description": "Modifies the Thunderbird Card View to display a message excerpt.",
   "version": "1.0",
   "author": "Antigravity",
-  "applications": {
+  "browser_specific_settings": {
     "gecko": {
       "id": "excerpt-card-view@example.com",
       "strict_min_version": "115.0"
