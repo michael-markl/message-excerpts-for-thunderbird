@@ -1,23 +1,38 @@
-var myExtensionAPI = globalThis.ExtensionAPI;
-if (!myExtensionAPI) {
-  myExtensionAPI = ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm").ExtensionCommon.ExtensionAPI;
-}
+// =====================================================================
+// Thunderbird Subject Excerpt Column (Experiment API)
+// =====================================================================
+//
+// WHY BACKGROUND.JS IS NECESSARY:
+// --------------------------------
+// This Experiment API (`implementation.js`) has privileged access to the
+// Thunderbird DOM (to inject UI elements) and XPCOM objects (like `msgHdr`),
+// but reading a full message body is complex (requires MIME parsing, handling
+// IMAP vs POP3, etc).
+//
+// The official, standard way to get message contents is via the WebExtension
+// API: `browser.messages.getFull()`. However, standard WebExtension APIs
+// are NOT available inside an Experiment API script.
+//
+// Therefore, an architecture bridge is required:
+// 1. UI Script (`implementation.js`) injects the loading state and fires
+//    `fireSnippetRequested(msgId)` to signal the background script.
+// 2. Background Script (`background.js`) listens for the event, uses the
+//    standard `browser.messages.getFull()` API to fetch and parse the email,
+//    and then sends the snippet back to the UI via `provideSnippet()`.
+// =====================================================================
 
-var myServices = globalThis.Services;
-if (!myServices) {
-  myServices = ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
-}
+var myExtensionAPI = globalThis.ExtensionAPI || ChromeUtils.import("resource://gre/modules/ExtensionCommon.jsm").ExtensionCommon.ExtensionAPI;
+var myServices = globalThis.Services || ChromeUtils.import("resource://gre/modules/Services.jsm").Services;
 
 var customColumn = class extends myExtensionAPI {
   getAPI(context) {
     let extension = context.extension;
     
-    // Global map to hold callbacks for snippets
-    let window = Services.wm.getMostRecentWindow("mail:3pane");
-    if (window && !window._snippetCallbacks) {
-        window._snippetCallbacks = new Map();
-    }
+    // Map to hold callbacks so we know where to place the snippet once fetched
+    // Keeping it inside the getAPI closure is much safer than attaching to DOM windows
+    let snippetCallbacks = new Map();
     
+    // Reference to the EventManager fire function for sending messages to background.js
     let fireSnippetRequested = null;
     
     function logMsg(msg) {
@@ -25,140 +40,220 @@ var customColumn = class extends myExtensionAPI {
         myServices.console.logStringMessage("CustomColumn: " + msg);
       }
     }
+
+    // =================================================================
+    // Helper Functions
+    // =================================================================
+
+    /**
+     * Recursively searches for the shadow DOM container that holds the message cards.
+     * Thunderbird uses a deep Shadow DOM hierarchy, so we must traverse through elements.
+     */
+    function findShadowContainerWithCards(root) {
+      if (!root) return null;
+      
+      try {
+         let cards = Array.from(root.querySelectorAll('.card-container, tr[is="thread-card"]'));
+         if (cards.length > 0) return { root: root, cards: cards };
+      } catch(e) {}
+      
+      try {
+         let iframes = root.querySelectorAll('iframe, browser');
+         for (let frame of iframes) {
+           if (frame.contentDocument) {
+              let result = findShadowContainerWithCards(frame.contentDocument);
+              if (result) return result;
+           }
+         }
+      } catch(e) {}
+      
+      try {
+         let allElements = root.querySelectorAll('*');
+         for (let el of allElements) {
+           if (el.shadowRoot) {
+             let result = findShadowContainerWithCards(el.shadowRoot);
+             if (result) return result;
+           }
+         }
+      } catch(e) {}
+      
+      return null;
+    }
+
+    /**
+     * Injects or updates an excerpt span inside a card element.
+     * Handles virtualized row recycling by tracking the msgId stored on the element.
+     */
+    function addExcerptToCard(cardElement) {
+      try {
+         let rowElement = cardElement.closest("tr") || cardElement;
+         let rowIndex = null;
+         
+         // Extract the row index from attributes or ID
+         if (rowElement && rowElement.id && rowElement.id.startsWith("threadTree-row")) {
+             rowIndex = rowElement.id.replace("threadTree-row", "");
+         } else if (rowElement && rowElement.getAttribute("data-row")) {
+             rowIndex = rowElement.getAttribute("data-row");
+         } else if (cardElement.getAttribute("data-row")) {
+             rowIndex = cardElement.getAttribute("data-row");
+         }
+         
+         // Retrieve the XPCOM message header
+         let msgHdr = null;
+         let localWindow = cardElement.ownerDocument ? cardElement.ownerDocument.defaultView : null;
+         
+         if (rowIndex !== null && rowElement && rowElement.view && typeof rowElement.view.getMsgHdrAt === "function") {
+           msgHdr = rowElement.view.getMsgHdrAt(parseInt(rowIndex, 10));
+         } else if (rowIndex !== null && localWindow && localWindow.gFolderDisplay && localWindow.gFolderDisplay.view) {
+           msgHdr = localWindow.gFolderDisplay.view.getMsgHdrAt(parseInt(rowIndex, 10));
+         } else if (rowElement && rowElement.msgHdr) {
+           msgHdr = rowElement.msgHdr;
+         } else if (cardElement.msgHdr) {
+           msgHdr = cardElement.msgHdr;
+         }
+         
+         if (!msgHdr) return;
+
+         // Convert XPCOM msgHdr to WebExtension msgId
+         let msgId = null;
+         if (extension.messageManager) {
+             try { msgId = extension.messageManager.convert(msgHdr).id; } catch(e){}
+         }
+         
+         // -------------------------------------------------------------
+         // Virtualized Row Recycling Handler
+         // Check if this row already has the correct excerpt loaded
+         // -------------------------------------------------------------
+         let existingExcerpt = cardElement.querySelector('.custom-excerpt');
+         if (existingExcerpt) {
+             if (msgId && String(existingExcerpt.dataset.msgId) === String(msgId)) {
+                 return; // This row already has the correct excerpt.
+             } else {
+                 existingExcerpt.remove(); // Stale excerpt from a recycled row. Delete it.
+             }
+         }
+         
+         // Create the new excerpt element
+         let excerptDiv = cardElement.ownerDocument.createElement("span");
+         excerptDiv.className = "custom-excerpt";
+         if (msgId) excerptDiv.dataset.msgId = msgId;
+         excerptDiv.style.cssText = "display: inline-block; flex: 1; margin-left: 8px; color: GrayText; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;";
+         excerptDiv.textContent = "(Loading excerpt...)";
+         
+         // Append to the subject container so it appears natively inline
+         let subjectContainer = cardElement.querySelector('.thread-card-subject-container') || cardElement.querySelector('.subject').parentNode;
+         if (subjectContainer) {
+             subjectContainer.appendChild(excerptDiv);
+         } else {
+             cardElement.appendChild(excerptDiv);
+         }
+         
+         // -------------------------------------------------------------
+         // Asynchronous Fetch Request
+         // -------------------------------------------------------------
+         if (msgId) {
+             // Register callback for when background.js returns the snippet
+             snippetCallbacks.set(msgId, (snippet) => {
+                 // Ensure the row wasn't recycled away while waiting
+                 if (excerptDiv.parentElement) {
+                     excerptDiv.textContent = snippet;
+                 }
+             });
+             
+             // Emit the request directly. Background.js will handle deduping and caching.
+             if (fireSnippetRequested) {
+                 fireSnippetRequested.async(msgId);
+             }
+         } else {
+             excerptDiv.textContent = "(No WebExt ID)";
+         }
+      } catch (e) {
+         logMsg("Failed to add excerpt to card: " + e);
+      }
+    }
+
+    // =================================================================
+    // API Export
+    // =================================================================
     return {
       customColumn: {
+        /**
+         * Called by background.js to provide the snippet back to the UI.
+         */
         async provideSnippet(msgId, snippet) {
-            Services.console.logStringMessage("API RECVD: provideSnippet(" + msgId + ", " + snippet + ")");
-            let win = Services.wm.getMostRecentWindow("mail:3pane");
-            if (win && win._snippetCallbacks && win._snippetCallbacks.has(msgId)) {
-                let cb = win._snippetCallbacks.get(msgId);
+            if (snippetCallbacks.has(msgId)) {
+                let cb = snippetCallbacks.get(msgId);
                 cb(snippet);
-                win._snippetCallbacks.delete(msgId);
-            } else {
-                Services.console.logStringMessage("API ERROR: No callback found in map for msgId " + msgId);
+                snippetCallbacks.delete(msgId);
             }
         },
+
+        /**
+         * Initializes the UI modifications and hooks into Thunderbird's DOM.
+         */
         async init() {
-          let initLog = [];
-          try {
+          return new Promise((resolve) => {
             logMsg("init() called in backend!");
-            initLog.push("Backend init started.");
+            
+            // Wait for 3pane window to load
             let windowListener = {
               onOpenWindow(xulWindow) {
-                let window = xulWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                                       .getInterface(Ci.nsIDOMWindow);
-                window.addEventListener("load", function listener() {
-                  window.removeEventListener("load", listener, false);
-                  let winType = window.document.documentElement.getAttribute("windowtype");
-                  logMsg("New window loaded with type: " + winType);
-                  if (winType === "mail:3pane") {
-                    modifyCardView(window);
+                let win = xulWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
+                win.addEventListener("load", function listener() {
+                  win.removeEventListener("load", listener, false);
+                  if (win.document.documentElement.getAttribute("windowtype") === "mail:3pane") {
+                    setupCardView(win);
                   }
                 }, false);
               },
-              onCloseWindow(xulWindow) {},
-              onWindowTitleChange(xulWindow, newTitle) {}
+              onCloseWindow() {},
+              onWindowTitleChange() {}
             };
             
             myServices.wm.addListener(windowListener);
             
-            logMsg("Checking for existing windows...");
-            let allWindows = myServices.wm.getEnumerator(null);
+            // Check existing windows
+            let allWindows = myServices.wm.getEnumerator("mail:3pane");
             let found3Pane = false;
             while (allWindows.hasMoreElements()) {
               let win = allWindows.getNext();
-              let docEl = win.document && win.document.documentElement;
-              let winType = docEl ? docEl.getAttribute("windowtype") : "unknown";
-              logMsg("Found existing window with type: " + winType);
-              if (winType === "mail:3pane") {
+              if (win.document.documentElement.getAttribute("windowtype") === "mail:3pane") {
                 found3Pane = true;
-                initLog.push("Found mail:3pane window.");
-                await modifyCardView(win, initLog);
+                setupCardView(win);
               }
             }
-            if (!found3Pane) {
-              logMsg("WARNING: No mail:3pane window was found during init.");
-              initLog.push("WARNING: No mail:3pane found.");
-            }
-            return initLog.join(" | ");
-          } catch (initErr) {
-            logMsg("Error inside customColumn.init(): " + initErr);
-            return "Error: " + initErr;
-          }
-
-          function modifyCardView(window, initLog) {
-            return new Promise((resolve) => {
-              function localLog(msg) {
-                logMsg(msg);
-                if (initLog) initLog.push(msg);
-              }
-              localLog("modifyCardView running!");
-              
-              let setupDone = false;
+            
+            if (!found3Pane) logMsg("WARNING: No mail:3pane window was found during init.");
+            resolve("Backend initialized.");
+            
+            /**
+             * Sets up the DOM observers and periodic scanners for the provided 3pane window.
+             */
+            function setupCardView(win) {
               let attempts = 0;
+              let setupDone = false;
               
-              function findShadowContainerWithCards(root) {
-                if (!root) return null;
-                
-                // Check light DOM of this root first
-                try {
-                   let cards = Array.from(root.querySelectorAll('.card-container, tr[is="thread-card"]'));
-                   if (cards.length > 0) return { root: root, cards: cards };
-                } catch(e) {}
-                
-                // Search iframes and browsers
-                try {
-                   let iframes = root.querySelectorAll('iframe, browser');
-                   for (let frame of iframes) {
-                     try {
-                        if (frame.contentDocument) {
-                           let result = findShadowContainerWithCards(frame.contentDocument);
-                           if (result) return result;
-                        }
-                     } catch(err) {}
-                   }
-                } catch(e) {}
-                
-                // Otherwise, search all elements that have a shadowRoot
-                try {
-                   let allElements = root.querySelectorAll('*');
-                   for (let el of allElements) {
-                     if (el.shadowRoot) {
-                       let result = findShadowContainerWithCards(el.shadowRoot);
-                       if (result && result.cards.length > 0) {
-                         return result; // Found it inside this shadowRoot
-                       }
-                     }
-                   }
-                } catch(e) {}
-                
-                return null;
-              }
-
-              function checkAndSetup() {
+              function attemptSetup() {
                 if (setupDone) return;
                 attempts++;
-                let document = window.document;
                 
-                let foundData = findShadowContainerWithCards(document.documentElement);
+                let foundData = findShadowContainerWithCards(win.document.documentElement);
                 
                 if (!foundData) {
                   if (attempts > 20) {
-                     localLog("Gave up waiting for cards to appear after 10 seconds.");
-                     resolve();
+                     logMsg("Gave up waiting for cards to appear after 10 seconds.");
                      return;
                   }
-                  window.setTimeout(checkAndSetup, 500);
+                  win.setTimeout(attemptSetup, 500);
                   return;
                 }
                 
                 setupDone = true;
-                localLog("Found " + foundData.cards.length + " cards! Architecture verified.");
-                
                 let container = foundData.root;
-                localLog("Using container root: " + (container.host ? container.host.tagName : container.tagName));
+                logMsg("Successfully injected into container. Cards found: " + foundData.cards.length);
 
-                let observer = new window.MutationObserver((mutations) => {
+                // 1. Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
+                let observer = new win.MutationObserver((mutations) => {
                  let cardsToUpdate = new Set();
                  for (let m of mutations) {
                      if (m.type === 'childList') {
@@ -185,108 +280,34 @@ var customColumn = class extends myExtensionAPI {
                      }
                  }
                  cardsToUpdate.forEach(c => addExcerptToCard(c));
-              });
-              
-              observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["id", "aria-label", "data-row"] });
-              
-              // Bulletproof fallback: periodically scan for newly recycled rows (e.g. fast scrolling or folder switching)
-              window.setInterval(() => {
-                 try {
-                     let cards = container.querySelectorAll('.card-container, tr[is="thread-card"]');
-                     cards.forEach(c => addExcerptToCard(c));
-                 } catch(e){}
-              }, 500);
+                });
+                observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["id", "aria-label", "data-row"] });
                 
-                if (foundData.cards.length > 0) {
-                   let sample = foundData.cards[0];
-                   localLog("Sample Card - class: '" + sample.className + "'");
-                }
-                for (let card of foundData.cards) {
-                   addExcerptToCard(card);
-                }
-                resolve();
+                // 2. Periodic Scanner: Bulletproof fallback for virtualized list edge cases
+                win.setInterval(() => {
+                   try {
+                       let cards = container.querySelectorAll('.card-container, tr[is="thread-card"]');
+                       cards.forEach(c => addExcerptToCard(c));
+                   } catch(e){}
+                }, 500);
+                
+                // Initialize existing cards
+                for (let card of foundData.cards) addExcerptToCard(card);
               }
               
-              checkAndSetup();
-            });
-          }
-
-          function addExcerptToCard(cardElement) {
-               try {
-                   let rowElement = cardElement.closest("tr");
-                   if (!rowElement && cardElement.tagName === "TR") rowElement = cardElement;
-                   let rowIndex = null;
-                   
-                   if (rowElement && rowElement.id && rowElement.id.startsWith("threadTree-row")) {
-                       rowIndex = rowElement.id.replace("threadTree-row", "");
-                   } else if (rowElement && rowElement.getAttribute("data-row")) {
-                       rowIndex = rowElement.getAttribute("data-row");
-                   } else if (cardElement.getAttribute("data-row")) {
-                       rowIndex = cardElement.getAttribute("data-row");
-                   }
-                   
-                   let msgHdr = null;
-                   if (rowIndex !== null && rowElement && rowElement.view && typeof rowElement.view.getMsgHdrAt === "function") {
-                     msgHdr = rowElement.view.getMsgHdrAt(parseInt(rowIndex, 10));
-                   } else if (rowIndex !== null && window.gFolderDisplay && window.gFolderDisplay.view) {
-                     msgHdr = window.gFolderDisplay.view.getMsgHdrAt(parseInt(rowIndex, 10));
-                   } else if (rowElement && rowElement.msgHdr) {
-                     msgHdr = rowElement.msgHdr;
-                   } else if (cardElement.msgHdr) {
-                     msgHdr = cardElement.msgHdr;
-                   }
-                   
-                   let msgId = null;
-                   if (msgHdr && extension.messageManager) {
-                       try { msgId = extension.messageManager.convert(msgHdr).id; } catch(e){}
-                   }
-                   
-                   let existingExcerpt = cardElement.querySelector('.custom-excerpt');
-                   if (existingExcerpt) {
-                       if (msgId && String(existingExcerpt.dataset.msgId) === String(msgId)) {
-                           return; // Correct excerpt already present for this row
-                       } else {
-                           existingExcerpt.remove(); // Stale excerpt from recycled row
-                       }
-                   }
-                   
-                   if (!msgHdr) return;
-                   
-                   let excerptDiv = window.document.createElement("span");
-                   excerptDiv.className = "custom-excerpt";
-                   if (msgId) excerptDiv.dataset.msgId = msgId;
-                   excerptDiv.style.cssText = "display: inline-block; flex: 1; margin-left: 8px; color: GrayText; font-size: 0.9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;";
-                   excerptDiv.textContent = " - (Loading excerpt...)";
-                   
-                   let subjectContainer = cardElement.querySelector('.thread-card-subject-container') || cardElement.querySelector('.subject').parentNode;
-                   if (subjectContainer) {
-                       subjectContainer.appendChild(excerptDiv);
-                   } else {
-                       cardElement.appendChild(excerptDiv);
-                   }
-                   
-                   if (msgId) {
-                       window._snippetCallbacks.set(msgId, (snippet) => {
-                           if (excerptDiv.parentElement) {
-                               excerptDiv.textContent = " - " + snippet;
-                           }
-                       });
-                       if (fireSnippetRequested) {
-                           fireSnippetRequested.async(msgId);
-                       }
-                   } else {
-                       excerptDiv.textContent = " - (No WebExt ID)";
-                   }
-               } catch (e) {
-                   logMsg("Failed to add excerpt to card: " + e);
-               }
-          }
+              attemptSetup();
+            }
+          });
         },
+        
+        /**
+         * EventManager that bridges communication to background.js
+         */
         onSnippetRequested: new ExtensionCommon.EventManager({
           context,
           name: "customColumn.onSnippetRequested",
           register(fire) {
-            Services.console.logStringMessage("EVENT FIRED: Listener registered!");
+            logMsg("Snippet request listener registered by background script!");
             fireSnippetRequested = fire;
             return () => {
               fireSnippetRequested = null;
