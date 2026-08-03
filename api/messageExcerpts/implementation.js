@@ -117,6 +117,7 @@ async function setupCardView(
   extension,
   snippetCallbacks,
   extensionState,
+  memoryCache,
 ) {
   const foundData = await waitForCardsContainer(win);
   const state = { observer: null, timer: null, win: win };
@@ -163,7 +164,7 @@ async function setupCardView(
       }
     }
     cardsToUpdate.forEach((c) =>
-      addExcerptToCard(c, extension, snippetCallbacks, extensionState),
+      addExcerptToCard(c, extension, snippetCallbacks, extensionState, memoryCache),
     );
   });
   state.observer.observe(container, {
@@ -175,7 +176,7 @@ async function setupCardView(
 
   // Initialize existing cards
   for (const card of foundData.cards)
-    addExcerptToCard(card, extension, snippetCallbacks, extensionState);
+    addExcerptToCard(card, extension, snippetCallbacks, extensionState, memoryCache);
 }
 
 /**
@@ -187,6 +188,7 @@ function addExcerptToCard(
   extension,
   snippetCallbacks,
   extensionState,
+  memoryCache,
 ) {
   if (cardElement.getAttribute("is") !== "thread-card") {
     logMsg("Not a thread card. Outer HTML:" + cardElement.outerHTML);
@@ -243,15 +245,26 @@ function addExcerptToCard(
     }
     subjectContainer.appendChild(excerptSpan);
 
-    // Register callback for when background.js returns the snippet
-    snippetCallbacks.set(msgId, (snippet) => {
+    const applySnippet = (snippet) => {
       // Ensure the row wasn't recycled away while waiting
       if (excerptSpan.parentElement) {
         excerptSpan.textContent = snippet;
       }
-    });
+    };
 
-    // Emit the request. Background.js will handle deduping and caching.
+    if (memoryCache.has(msgId)) {
+      applySnippet(memoryCache.get(msgId));
+      return;
+    }
+
+    if (snippetCallbacks.has(msgId)) {
+      snippetCallbacks.get(msgId).push(applySnippet);
+      return; // Already actively fetching this snippet
+    } else {
+      snippetCallbacks.set(msgId, [applySnippet]);
+    }
+
+    // Emit the request. Background.js will handle fetching.
     if (extensionState.fireSnippetRequested) {
       try {
         extensionState.fireSnippetRequested.async(msgId);
@@ -336,6 +349,7 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
     const activeStates = new Set();
     context.extension.activeStates = activeStates;
 
+    const memoryCache = new Map();
     const snippetCallbacks = new Map();
     const extensionState = { fireSnippetRequested: null, fireHeartbeat: null };
 
@@ -348,9 +362,12 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
          * Called by background.js to provide the snippet back to the UI.
          */
         provideSnippet(msgId, snippet) {
+          memoryCache.set(msgId, snippet);
+          if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
+
           if (snippetCallbacks.has(msgId)) {
-            const cb = snippetCallbacks.get(msgId);
-            cb(snippet);
+            const callbacks = snippetCallbacks.get(msgId);
+            callbacks.forEach((cb) => cb(snippet));
             snippetCallbacks.delete(msgId);
           }
         },
@@ -374,6 +391,7 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
                 extension,
                 snippetCallbacks,
                 extensionState,
+                memoryCache,
               );
             },
             onUnloadWindow(win) {

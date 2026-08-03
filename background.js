@@ -13,32 +13,19 @@
  * 2. Listening for `onSnippetRequested` events fired from the UI.
  * 3. Fetching the full message content using `browser.messages.getFull`.
  * 4. Parsing the MIME structure to extract plain text.
- * 5. Caching and deduping requests to ensure high performance during scrolling.
- * 6. Returning the processed snippet back to the UI via `provideSnippet`.
+ * 5. Returning the processed snippet back to the UI via `provideSnippet`.
  * =====================================================================
  */
 
 async function main() {
   console.log("Message Excerpt Card View addon starting...");
   try {
-    const memoryCache = new Map();
-    const pendingRequests = new Map();
-
     browser.messageExcerpts.onHeartbeat.addListener(() => {
       // Just receiving this event keeps the Event Page alive. No action needed.
     });
 
     browser.messageExcerpts.onSnippetRequested.addListener(async (msgId) => {
       try {
-        if (memoryCache.has(msgId)) {
-          browser.messageExcerpts.provideSnippet(msgId, memoryCache.get(msgId));
-          return;
-        }
-        if (pendingRequests.has(msgId)) {
-          return; // Already actively fetching this snippet
-        }
-        pendingRequests.set(msgId, true);
-
         const parts = await browser.messages.listInlineTextParts(msgId);
         let snippet = "";
 
@@ -66,14 +53,9 @@ async function main() {
         snippet =
           snippet.substring(0, 150) + (snippet.length > 150 ? "..." : "");
 
-        memoryCache.set(msgId, snippet);
-        if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
-
-        pendingRequests.delete(msgId);
         browser.messageExcerpts.provideSnippet(msgId, snippet);
       } catch (e) {
         console.error("Failed to get snippet:", e);
-        pendingRequests.delete(msgId);
         browser.messageExcerpts.provideSnippet(msgId, "(Snippet fetch error)");
       }
     });
