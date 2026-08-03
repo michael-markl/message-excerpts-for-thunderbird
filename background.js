@@ -18,65 +18,6 @@
  * =====================================================================
  */
 
-/**
- * Extracts plain text from a message part or MIME structure.
- * Automatically parses HTML and cleans up whitespace.
- * Returns the final cleaned text string.
- */
-function extractText(part) {
-  function findPart(p) {
-    if (p.parts && p.parts.length > 0) {
-      const plain = p.parts.find((x) => x.contentType === "text/plain");
-      if (plain && plain.body) return { text: plain.body, isHtml: false };
-
-      const html = p.parts.find((x) => x.contentType === "text/html");
-      if (html && html.body) return { text: html.body, isHtml: true };
-
-      if (p.parts[0]) return findPart(p.parts[0]);
-    }
-
-    const isHtmlType =
-      p.contentType === "text/html" ||
-      (p.headers &&
-        p.headers["content-type"] &&
-        p.headers["content-type"][0].includes("text/html"));
-
-    if (p.body) return { text: p.body, isHtml: isHtmlType };
-    return { text: "", isHtml: false };
-  }
-
-  const result = findPart(part);
-  let cleanText = result.text;
-
-  if (result.isHtml) {
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(cleanText, "text/html");
-
-      // Append spaces to block elements so words don't merge (e.g. <p>Hello</p><p>World</p> -> Hello World)
-      const blocks = doc.querySelectorAll(
-        "p, div, br, tr, td, h1, h2, h3, h4, h5, h6, li, blockquote",
-      );
-      blocks.forEach((el) => el.appendChild(doc.createTextNode(" ")));
-
-      // textContent ignores <script> and <style> by default if we just take it from the body,
-      // but sometimes they linger. Let's explicitly remove them just in case.
-      const scripts = doc.querySelectorAll("script, style, head");
-      scripts.forEach((el) => el.remove());
-
-      cleanText = doc.body.textContent || "";
-    } catch (e) {
-      console.error("DOMParser failed, falling back to basic extraction", e);
-    }
-  }
-
-  // Cleanup leftover excess whitespace and generic signatures
-  return cleanText
-    .replace(/\s+/g, " ")
-    .replace(/--[\w=-]+/g, "")
-    .trim();
-}
-
 async function main() {
   console.log("Message Excerpt Card View addon starting...");
   try {
@@ -90,10 +31,7 @@ async function main() {
     browser.messageExcerpts.onSnippetRequested.addListener(async (msgId) => {
       try {
         if (memoryCache.has(msgId)) {
-          browser.messageExcerpts.provideSnippet(
-            msgId,
-            memoryCache.get(msgId),
-          );
+          browser.messageExcerpts.provideSnippet(msgId, memoryCache.get(msgId));
           return;
         }
         if (pendingRequests.has(msgId)) {
@@ -101,10 +39,32 @@ async function main() {
         }
         pendingRequests.set(msgId, true);
 
-        const full = await browser.messages.getFull(msgId);
-        const cleanText = extractText(full);
-        const snippet =
-          cleanText.substring(0, 150) + (cleanText.length > 150 ? "..." : "");
+        const parts = await browser.messages.listInlineTextParts(msgId);
+        let snippet = "";
+
+        if (parts && parts.length > 0) {
+          // Prefer text/plain if available
+          let part = parts.find((p) => p.contentType === "text/plain");
+          if (part && part.content) {
+            snippet = part.content;
+          } else {
+            // Fallback to text/html
+            part = parts.find((p) => p.contentType === "text/html");
+            if (part && part.content) {
+              snippet = await browser.messengerUtilities.convertToPlainText(
+                part.content,
+              );
+            }
+          }
+        }
+
+        // Cleanup excess whitespace and signatures
+        snippet = snippet
+          .replace(/\s+/g, " ")
+          .trim();
+
+        snippet =
+          snippet.substring(0, 150) + (snippet.length > 150 ? "..." : "");
 
         memoryCache.set(msgId, snippet);
         if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
@@ -114,10 +74,7 @@ async function main() {
       } catch (e) {
         console.error("Failed to get snippet:", e);
         pendingRequests.delete(msgId);
-        browser.messageExcerpts.provideSnippet(
-          msgId,
-          "(Snippet fetch error)",
-        );
+        browser.messageExcerpts.provideSnippet(msgId, "(Snippet fetch error)");
       }
     });
 
