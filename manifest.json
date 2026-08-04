@@ -1,17 +1,23 @@
 {
   "manifest_version": 3,
-  "name": "Message Excerpt Card View",
-  "description": "Modifies the Thunderbird Card View to display a message excerpt.",
-  "version": "1.0",
-  "author": "Antigravity",
+  "name": "Message Excerpts",
+  "description": "Displays a message excerpt after the subject.",
+  "version": "0.1",
+  "author": "Michael Markl",
   "browser_specific_settings": {
     "gecko": {
-      "id": "excerpt-card-view@example.com",
+      "id": "message-excerpts@michael-markl.de",
       "strict_min_version": "115.0"
     }
   },
   "background": {
     "scripts": ["background.js"]
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "64": "icon-64.png",
+    "128": "icon-128.png"
   },
   "permissions": [
     "messagesRead"
