@@ -8,4 +8,4 @@ for size in 16 32 48 64 128; do
   optipng -o2 icon-${size}.png || exit 1
 done
 
-zip -r addon.xpi manifest.json background.js api/* icon*.png
+zip -r addon.xpi manifest.json background.js api/* icon*.png README.md LICENSE

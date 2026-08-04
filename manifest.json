@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Message Excerpts",
+  "name": "Thunderbird Message Excerpts",
   "description": "Displays a message excerpt after the subject.",
   "version": "0.1",
   "author": "Michael Markl",
+  "homepage_url": "https://github.com/michael-markl/thunderbird-message-excerpts",
   "browser_specific_settings": {
     "gecko": {
-      "id": "message-excerpts@michael-markl.de",
+      "id": "thunderbird-message-excerpts@michael-markl.de",
       "strict_min_version": "128.0",
       "strict_max_version": "153.*"
     }
