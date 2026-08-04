@@ -303,28 +303,10 @@ function addExcerptToCard(
     }
 
     // Emit the request. Background.js will handle fetching.
-    if (extensionState.fireSnippetRequested) {
-      try {
-        extensionState.fireSnippetRequested.async(msgId);
-      } catch (e) {
-        // If the fire object was invalidated by the framework (Event Page suspended),
-        // we'll catch the error and queue it instead.
-        queueAndWakeup(msgId);
-      }
+    if (!extensionState.fireSnippetRequested) {
+      extensionState.pendingRequests.add(msgId);
     } else {
-      queueAndWakeup(msgId);
-    }
-
-    function queueAndWakeup(id) {
-      if (!extensionState.pendingRequests) {
-        extensionState.pendingRequests = new Set();
-      }
-      extensionState.pendingRequests.add(id);
-      logMsg(
-        "Queued snippet request for " +
-          id +
-          " because background script is detached.",
-      );
+      extensionState.fireSnippetRequested.async(msgId);
     }
   } catch (e) {
     logMsg("Failed to add excerpt to card: " + e);
@@ -359,7 +341,7 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
 
     const memoryCache = new Map();
     const snippetCallbacks = new Map();
-    const extensionState = { fireSnippetRequested: null, fireHeartbeat: null };
+    const extensionState = { fireSnippetRequested: null, fireHeartbeat: null, pendingRequests: new Set() };
 
     return {
       messageExcerpts: {
