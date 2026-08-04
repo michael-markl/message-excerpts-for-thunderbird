@@ -35,7 +35,7 @@ const ExtensionSupport =
     .ExtensionSupport;
 
 // =================================================================
-// Global State and Helper Functions
+// Helper Functions
 // =================================================================
 
 function logMsg(msg) {
@@ -77,6 +77,32 @@ function findShadowContainerWithCards(root) {
   } catch (e) {}
 
   return null;
+}
+
+// Remove injected UI
+function removeAllExcerpts(rootNode) {
+  if (!rootNode || !rootNode.querySelectorAll) return;
+
+  const excerpts = rootNode.querySelectorAll(".custom-excerpt");
+  for (let i = 0; i < excerpts.length; i++) {
+    excerpts[i].remove();
+  }
+
+  const iframes = rootNode.querySelectorAll("iframe, browser");
+  for (let i = 0; i < iframes.length; i++) {
+    try {
+      if (iframes[i].contentDocument) {
+        removeAllExcerpts(iframes[i].contentDocument);
+      }
+    } catch (e) {} // Cross-origin frames can throw on access
+  }
+
+  const allElements = rootNode.querySelectorAll("*");
+  for (let i = 0; i < allElements.length; i++) {
+    if (allElements[i].shadowRoot) {
+      removeAllExcerpts(allElements[i].shadowRoot);
+    }
+  }
 }
 
 async function waitForCardsContainer(win) {
@@ -164,7 +190,13 @@ async function setupCardView(
       }
     }
     cardsToUpdate.forEach((c) =>
-      addExcerptToCard(c, extension, snippetCallbacks, extensionState, memoryCache),
+      addExcerptToCard(
+        c,
+        extension,
+        snippetCallbacks,
+        extensionState,
+        memoryCache,
+      ),
     );
   });
   state.observer.observe(container, {
@@ -176,7 +208,13 @@ async function setupCardView(
 
   // Initialize existing cards
   for (const card of foundData.cards)
-    addExcerptToCard(card, extension, snippetCallbacks, extensionState, memoryCache);
+    addExcerptToCard(
+      card,
+      extension,
+      snippetCallbacks,
+      extensionState,
+      memoryCache,
+    );
 }
 
 /**
@@ -307,39 +345,9 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
       for (const state of this.extension.activeStates) {
         if (state.timer) state.win.clearInterval(state.timer);
         if (state.observer) state.observer.disconnect();
+        removeAllExcerpts(state.win.document.documentElement);
       }
       this.extension.activeStates.clear();
-    }
-
-    const removeAllExcerpts = (rootNode) => {
-      if (!rootNode || !rootNode.querySelectorAll) return;
-
-      const excerpts = rootNode.querySelectorAll(".custom-excerpt");
-      for (let i = 0; i < excerpts.length; i++) {
-        excerpts[i].remove();
-      }
-
-      const iframes = rootNode.querySelectorAll("iframe, browser");
-      for (let i = 0; i < iframes.length; i++) {
-        try {
-          if (iframes[i].contentDocument) {
-            removeAllExcerpts(iframes[i].contentDocument);
-          }
-        } catch (e) {} // Cross-origin frames can throw on access
-      }
-
-      const allElements = rootNode.querySelectorAll("*");
-      for (let i = 0; i < allElements.length; i++) {
-        if (allElements[i].shadowRoot) {
-          removeAllExcerpts(allElements[i].shadowRoot);
-        }
-      }
-    };
-
-    const allWindows = Services.wm.getEnumerator("mail:3pane");
-    while (allWindows.hasMoreElements()) {
-      const win = allWindows.getNext();
-      removeAllExcerpts(win.document.documentElement);
     }
   }
 
@@ -353,9 +361,6 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
     const snippetCallbacks = new Map();
     const extensionState = { fireSnippetRequested: null, fireHeartbeat: null };
 
-    // =================================================================
-    // API Export
-    // =================================================================
     return {
       messageExcerpts: {
         /**
@@ -405,31 +410,6 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
                 }
               }
 
-              // Remove injected UI
-              function removeAllExcerpts(rootNode) {
-                if (!rootNode || !rootNode.querySelectorAll) return;
-
-                const excerpts = rootNode.querySelectorAll(".custom-excerpt");
-                for (let i = 0; i < excerpts.length; i++) {
-                  excerpts[i].remove();
-                }
-
-                const iframes = rootNode.querySelectorAll("iframe, browser");
-                for (let i = 0; i < iframes.length; i++) {
-                  try {
-                    if (iframes[i].contentDocument) {
-                      removeAllExcerpts(iframes[i].contentDocument);
-                    }
-                  } catch (e) {} // Cross-origin frames can throw on access
-                }
-
-                const allElements = rootNode.querySelectorAll("*");
-                for (let i = 0; i < allElements.length; i++) {
-                  if (allElements[i].shadowRoot) {
-                    removeAllExcerpts(allElements[i].shadowRoot);
-                  }
-                }
-              }
               removeAllExcerpts(win.document.documentElement);
             },
           });
