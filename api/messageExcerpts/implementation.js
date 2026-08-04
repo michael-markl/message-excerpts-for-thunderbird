@@ -10,15 +10,15 @@
 // IMAP vs POP3, etc).
 //
 // The official, standard way to get message contents is via the WebExtension
-// API: `browser.messages.getFull()`. However, standard WebExtension APIs
+// APIs like `browser.messages.listInlineTextParts()`. However, standard WebExtension APIs
 // are NOT available inside an Experiment API script.
 //
 // Therefore, an architecture bridge is required:
-// 1. UI Script (`implementation.js`) injects the loading state and fires
-//    `fireSnippetRequested(msgId)` to signal the background script.
+// 1. UI Script (`implementation.js`) injects the loading state, handles caching/deduping,
+//    and fires `fireExcerptRequested(msgId)` to signal the background script.
 // 2. Background Script (`background.js`) listens for the event, uses the
-//    standard `browser.messages.getFull()` API to fetch and parse the email,
-//    and then sends the snippet back to the UI via `provideSnippet()`.
+//    standard `browser.messages.listInlineTextParts()` API to fetch the text,
+//    and then sends the excerpt back to the UI via `provideExcerpt()`.
 // =====================================================================
 
 const ExtensionAPI =
@@ -143,7 +143,7 @@ async function setupMessageView(
   win,
   activeStates,
   extension,
-  snippetCallbacks,
+  excerptCallbacks,
   extensionState,
   memoryCache,
 ) {
@@ -201,7 +201,7 @@ async function setupMessageView(
       addExcerptToRow(
         c,
         extension,
-        snippetCallbacks,
+        excerptCallbacks,
         extensionState,
         memoryCache,
       ),
@@ -219,7 +219,7 @@ async function setupMessageView(
     addExcerptToRow(
       card,
       extension,
-      snippetCallbacks,
+      excerptCallbacks,
       extensionState,
       memoryCache,
     );
@@ -232,7 +232,7 @@ async function setupMessageView(
 function addExcerptToRow(
   rowElement,
   extension,
-  snippetCallbacks,
+  excerptCallbacks,
   extensionState,
   memoryCache,
 ) {
@@ -298,30 +298,45 @@ function addExcerptToRow(
     }
     subjectContainer.appendChild(excerptSpan);
 
-    const applySnippet = (snippet) => {
+    const applyExcerpt = (excerpt) => {
       // Ensure the row wasn't recycled away while waiting
       if (excerptSpan.parentElement) {
-        excerptSpan.textContent = snippet;
+        excerptSpan.textContent = excerpt;
       }
     };
 
     if (memoryCache.has(msgId)) {
-      applySnippet(memoryCache.get(msgId));
+      applyExcerpt(memoryCache.get(msgId));
       return;
     }
 
-    if (snippetCallbacks.has(msgId)) {
-      snippetCallbacks.get(msgId).push(applySnippet);
-      return; // Already actively fetching this snippet
+    if (excerptCallbacks.has(msgId)) {
+      excerptCallbacks.get(msgId).push(applyExcerpt);
+      return; // Already actively fetching this excerpt
     } else {
-      snippetCallbacks.set(msgId, [applySnippet]);
+      excerptCallbacks.set(msgId, [applyExcerpt]);
     }
 
     // Emit the request. Background.js will handle fetching.
-    if (!extensionState.fireSnippetRequested) {
-      extensionState.pendingRequests.add(msgId);
+    if (extensionState.fireExcerptRequested) {
+      try {
+        extensionState.fireExcerptRequested.async(msgId);
+      } catch (e) {
+        // If the fire object was invalidated by the framework,
+        // we'll catch the error and queue it instead.
+        queueRequest(msgId);
+      }
     } else {
-      extensionState.fireSnippetRequested.async(msgId);
+      queueRequest(msgId);
+    }
+
+    function queueRequest(id) {
+      extensionState.pendingRequests.add(id);
+      logMsg(
+        "Queued excerpt request for " +
+          id +
+          " because background script is not yet attached.",
+      );
     }
   } catch (e) {
     logMsg("Failed to add excerpt to card: " + e);
@@ -355,9 +370,9 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
     context.extension.activeStates = activeStates;
 
     const memoryCache = new Map();
-    const snippetCallbacks = new Map();
+    const excerptCallbacks = new Map();
     const extensionState = {
-      fireSnippetRequested: null,
+      fireExcerptRequested: null,
       fireHeartbeat: null,
       pendingRequests: new Set(),
     };
@@ -365,16 +380,16 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
     return {
       messageExcerpts: {
         /**
-         * Called by background.js to provide the snippet back to the UI.
+         * Called by background.js to provide the excerpt back to the UI.
          */
-        provideSnippet(msgId, snippet) {
-          memoryCache.set(msgId, snippet);
+        provideExcerpt(msgId, excerpt) {
+          memoryCache.set(msgId, excerpt);
           if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
 
-          if (snippetCallbacks.has(msgId)) {
-            const callbacks = snippetCallbacks.get(msgId);
-            callbacks.forEach((cb) => cb(snippet));
-            snippetCallbacks.delete(msgId);
+          if (excerptCallbacks.has(msgId)) {
+            const callbacks = excerptCallbacks.get(msgId);
+            callbacks.forEach((cb) => cb(excerpt));
+            excerptCallbacks.delete(msgId);
           }
         },
 
@@ -395,7 +410,7 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
                 win,
                 activeStates,
                 extension,
-                snippetCallbacks,
+                excerptCallbacks,
                 extensionState,
                 memoryCache,
               );
@@ -421,26 +436,24 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
         /**
          * EventManager that bridges communication to background.js
          */
-        onSnippetRequested: new ExtensionCommon.EventManager({
+        onExcerptRequested: new ExtensionCommon.EventManager({
           context,
-          name: "messageExcerpts.onSnippetRequested",
+          name: "messageExcerpts.onExcerptRequested",
           register(fire) {
-            logMsg("Snippet request listener registered by background script!");
-            extensionState.fireSnippetRequested = fire;
+            logMsg("Excerpt request listener registered by background script!");
+            extensionState.fireExcerptRequested = fire;
 
             // Flush any requests that came in before registration
-            if (extensionState.pendingRequests) {
-              for (const msgId of extensionState.pendingRequests) {
-                fire.async(msgId);
-              }
-              extensionState.pendingRequests.clear();
+            for (const msgId of extensionState.pendingRequests) {
+              fire.async(msgId);
             }
+            extensionState.pendingRequests.clear();
 
             return () => {
               logMsg(
-                "Snippet request listener cleanup called (Event Page suspended).",
+                "Excerpt request listener cleanup called (Event Page suspended).",
               );
-              extensionState.fireSnippetRequested = null;
+              extensionState.fireExcerptRequested = null;
             };
           },
         }).api(),

@@ -10,10 +10,13 @@
  *
  * This script bridges that gap by:
  * 1. Initializing the Message Excerpt Experiment API.
- * 2. Listening for `onSnippetRequested` events fired from the UI.
- * 3. Fetching the full message content using `browser.messages.getFull`.
- * 4. Parsing the MIME structure to extract plain text.
- * 5. Returning the processed snippet back to the UI via `provideSnippet`.
+ * 2. Listening for `onExcerptRequested` events fired from the UI.
+ * 3. Fetching the message content using `browser.messages.listInlineTextParts`.
+ * 4. Cleaning up and truncating the extracted plain text.
+ * 5. Returning the processed excerpt back to the UI via `provideExcerpt`.
+ * 
+ * Note: Caching and deduping logic is handled by the UI script (implementation.js)
+ * to minimize IPC overhead.
  * =====================================================================
  */
 
@@ -37,21 +40,21 @@ async function main() {
       }
     };
 
-    browser.messageExcerpts.onSnippetRequested.addListener(async (msgId) => {
+    browser.messageExcerpts.onExcerptRequested.addListener(async (msgId) => {
       try {
         const parts = await getPartsWithRetry(msgId, 5);
-        let snippet = "";
+        let excerpt = "";
 
         if (parts && parts.length > 0) {
           // Prefer text/plain if available
           let part = parts.find((p) => p.contentType === "text/plain");
           if (part && part.content) {
-            snippet = part.content;
+            excerpt = part.content;
           } else {
             // Fallback to text/html
             part = parts.find((p) => p.contentType === "text/html");
             if (part && part.content) {
-              snippet = await browser.messengerUtilities.convertToPlainText(
+              excerpt = await browser.messengerUtilities.convertToPlainText(
                 part.content,
               );
             }
@@ -59,15 +62,15 @@ async function main() {
         }
 
         // Cleanup excess whitespace and signatures
-        snippet = snippet.replace(/\s+/g, " ").trim();
+        excerpt = excerpt.replace(/\s+/g, " ").trim();
 
-        snippet =
-          snippet.substring(0, 150) + (snippet.length > 150 ? "..." : "");
+        excerpt =
+          excerpt.substring(0, 150) + (excerpt.length > 150 ? "..." : "");
 
-        browser.messageExcerpts.provideSnippet(msgId, snippet);
+        browser.messageExcerpts.provideExcerpt(msgId, excerpt);
       } catch (e) {
-        console.error("Failed to get snippet:", e);
-        browser.messageExcerpts.provideSnippet(
+        console.error("Failed to get excerpt:", e);
+        browser.messageExcerpts.provideExcerpt(
           msgId,
           "(Failed to load excerpt)",
         );
