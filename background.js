@@ -24,9 +24,22 @@ async function main() {
       // Just receiving this event keeps the Event Page alive. No action needed.
     });
 
+    const getPartsWithRetry = async (id, maxRetries = 5) => {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          return await browser.messages.listInlineTextParts(id);
+        } catch (err) {
+          if (attempt === maxRetries - 1) throw err;
+          const baseDelay = 100 + Math.random() * 100; // Random base between 100ms and 200ms
+          const delayMs = Math.pow(2, attempt) * baseDelay;
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+      }
+    };
+
     browser.messageExcerpts.onSnippetRequested.addListener(async (msgId) => {
       try {
-        const parts = await browser.messages.listInlineTextParts(msgId);
+        const parts = await getPartsWithRetry(msgId, 5);
         let snippet = "";
 
         if (parts && parts.length > 0) {
@@ -46,9 +59,7 @@ async function main() {
         }
 
         // Cleanup excess whitespace and signatures
-        snippet = snippet
-          .replace(/\s+/g, " ")
-          .trim();
+        snippet = snippet.replace(/\s+/g, " ").trim();
 
         snippet =
           snippet.substring(0, 150) + (snippet.length > 150 ? "..." : "");
@@ -56,7 +67,10 @@ async function main() {
         browser.messageExcerpts.provideSnippet(msgId, snippet);
       } catch (e) {
         console.error("Failed to get snippet:", e);
-        browser.messageExcerpts.provideSnippet(msgId, "(Snippet fetch error)");
+        browser.messageExcerpts.provideSnippet(
+          msgId,
+          "(Failed to load excerpt)",
+        );
       }
     });
 
