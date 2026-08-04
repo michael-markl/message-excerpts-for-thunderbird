@@ -2,9 +2,13 @@
 
 A Thunderbird extension that displays message excerpts directly in the message list after the subject line.
 
-|                   Cards View                    |                    Table View                    |
-| :---------------------------------------------: | :----------------------------------------------: |
-| ![Cards View](screenshot-card-view-cropped.png) | ![Table View](screenshot-table-view-cropped.png) |
+_Cards View:_
+
+![Cards View](screenshot-card-view-cropped.png)
+
+_Table View:_
+
+![Table View](screenshot-table-view-cropped.png) |
 
 ## Features
 
