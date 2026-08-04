@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Thunderbird Message Excerpts",
   "description": "Displays a message excerpt after the subject.",
-  "version": "0.1",
+  "version": "0.1.0",
   "author": "Michael Markl",
   "homepage_url": "https://github.com/michael-markl/thunderbird-message-excerpts",
   "browser_specific_settings": {
