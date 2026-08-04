@@ -1,6 +1,6 @@
 # Thunderbird Message Excerpts
 
-A Thunderbird add-on that displays a message excerpt after the subject in the message list.
+A Thunderbird extension that displays message excerpts directly in the message list.
 
 ## Features
 
@@ -28,7 +28,7 @@ This will generate the icons as png and create an `addon.xpi` file which can be 
 
 ## License
 
-This work is licensed under the MPL 2.0. A copy of this license is included in the file [LICENSE](LICENSE).
+This work is licensed under the MPL 2.0. A copy of this license is included in the [LICENSE](LICENSE) file.
 
 ## AI Disclosure
 
