@@ -45,14 +45,16 @@ function logMsg(msg) {
 }
 
 /**
- * Recursively searches for the shadow DOM container that holds the message cards.
+ * Recursively searches for the shadow DOM container that holds the message rows.
  * Thunderbird uses a deep Shadow DOM hierarchy, so we must traverse through elements.
  */
-function findShadowContainerWithCards(root) {
+function findShadowContainerWithRows(root) {
   if (!root) return null;
 
   try {
-    const cards = Array.from(root.querySelectorAll('tr[is="thread-card"]'));
+    const cards = Array.from(
+      root.querySelectorAll('tr[is="thread-card"], tr[is="thread-row"]'),
+    );
     if (cards.length > 0) return { root: root, cards: cards };
   } catch (e) {}
 
@@ -60,7 +62,7 @@ function findShadowContainerWithCards(root) {
     const iframes = root.querySelectorAll("iframe, browser");
     for (const frame of iframes) {
       if (frame.contentDocument) {
-        const result = findShadowContainerWithCards(frame.contentDocument);
+        const result = findShadowContainerWithRows(frame.contentDocument);
         if (result) return result;
       }
     }
@@ -70,7 +72,7 @@ function findShadowContainerWithCards(root) {
     const allElements = root.querySelectorAll("*");
     for (const el of allElements) {
       if (el.shadowRoot) {
-        const result = findShadowContainerWithCards(el.shadowRoot);
+        const result = findShadowContainerWithRows(el.shadowRoot);
         if (result) return result;
       }
     }
@@ -105,12 +107,12 @@ function removeAllExcerpts(rootNode) {
   }
 }
 
-async function waitForCardsContainer(win) {
+async function waitForRowsContainer(win) {
   let attempts = 0;
   const NUM_ATTEMPTS = 14;
 
   while (attempts < NUM_ATTEMPTS) {
-    const cardsContainer = findShadowContainerWithCards(
+    const cardsContainer = findShadowContainerWithRows(
       win.document.documentElement,
     );
     if (cardsContainer) {
@@ -137,7 +139,7 @@ async function waitForCardsContainer(win) {
  *
  * @param {Window} win the mail 3 pane window
  */
-async function setupCardView(
+async function setupMessageView(
   win,
   activeStates,
   extension,
@@ -145,7 +147,7 @@ async function setupCardView(
   extensionState,
   memoryCache,
 ) {
-  const foundData = await waitForCardsContainer(win);
+  const foundData = await waitForRowsContainer(win);
   const state = { observer: null, timer: null, win: win };
   activeStates.add(state);
 
@@ -169,10 +171,13 @@ async function setupCardView(
       if (m.type === "childList") {
         m.addedNodes.forEach((node) => {
           if (node.nodeType === win.Node.ELEMENT_NODE) {
-            if (node.getAttribute("is") === "thread-card") {
+            const isAttr = node.getAttribute("is");
+            if (isAttr === "thread-card" || isAttr === "thread-row") {
               cardsToUpdate.add(node);
             } else if (node.querySelectorAll) {
-              const cards = node.querySelectorAll('tr[is="thread-card"]');
+              const cards = node.querySelectorAll(
+                'tr[is="thread-card"], tr[is="thread-row"]',
+              );
               cards.forEach((c) => cardsToUpdate.add(c));
             }
           }
@@ -180,17 +185,20 @@ async function setupCardView(
       } else if (m.type === "attributes" && m.target) {
         const node = m.target;
         if (node.nodeType === win.Node.ELEMENT_NODE) {
-          if (node.getAttribute("is") === "thread-card") {
+          const isAttr = node.getAttribute("is");
+          if (isAttr === "thread-card" || isAttr === "thread-row") {
             cardsToUpdate.add(node);
           } else {
-            const card = node.closest('tr[is="thread-card"]');
+            const card = node.closest(
+              'tr[is="thread-card"], tr[is="thread-row"]',
+            );
             if (card) cardsToUpdate.add(card);
           }
         }
       }
     }
     cardsToUpdate.forEach((c) =>
-      addExcerptToCard(
+      addExcerptToRow(
         c,
         extension,
         snippetCallbacks,
@@ -206,9 +214,9 @@ async function setupCardView(
     attributeFilter: ["id", "aria-label", "data-row"],
   });
 
-  // Initialize existing cards
+  // Initialize existing rows
   for (const card of foundData.cards)
-    addExcerptToCard(
+    addExcerptToRow(
       card,
       extension,
       snippetCallbacks,
@@ -218,29 +226,30 @@ async function setupCardView(
 }
 
 /**
- * Injects or updates an excerpt span inside a card element.
+ * Injects or updates an excerpt span inside a row element.
  * Handles virtualized row recycling by tracking the msgId stored on the element.
  */
-function addExcerptToCard(
-  cardElement,
+function addExcerptToRow(
+  rowElement,
   extension,
   snippetCallbacks,
   extensionState,
   memoryCache,
 ) {
-  if (cardElement.getAttribute("is") !== "thread-card") {
-    logMsg("Not a thread card. Outer HTML:" + cardElement.outerHTML);
+  const isAttr = rowElement.getAttribute("is");
+  if (isAttr !== "thread-card" && isAttr !== "thread-row") {
+    logMsg("Not a thread row/card. Outer HTML:" + rowElement.outerHTML);
     return;
   }
   try {
     // Extract the row index from ID
-    if (!cardElement.id || !cardElement.id.startsWith("threadTree-row")) {
+    if (!rowElement.id || !rowElement.id.startsWith("threadTree-row")) {
       return;
     }
-    const rowIndex = parseInt(cardElement.id.replace("threadTree-row", ""), 10);
-    const msgHdr = cardElement.view.getMsgHdrAt(rowIndex);
+    const rowIndex = parseInt(rowElement.id.replace("threadTree-row", ""), 10);
+    const msgHdr = rowElement.view.getMsgHdrAt(rowIndex);
     if (!msgHdr) {
-      logMsg("No message header found for card: #" + cardElement.id);
+      logMsg("No message header found for row: #" + rowElement.id);
       return;
     }
 
@@ -257,7 +266,7 @@ function addExcerptToCard(
     // Virtualized Row Recycling Handler
     // Check if this row already has the correct excerpt loaded
     // -------------------------------------------------------------
-    const existingExcerpt = cardElement.querySelector(".custom-excerpt");
+    const existingExcerpt = rowElement.querySelector(".custom-excerpt");
     if (existingExcerpt) {
       if (existingExcerpt.dataset.msgId === String(msgId)) {
         return; // This row already has the correct excerpt.
@@ -266,7 +275,7 @@ function addExcerptToCard(
     }
 
     // Create the new excerpt element
-    const excerptSpan = cardElement.ownerDocument.createElement("span");
+    const excerptSpan = rowElement.ownerDocument.createElement("span");
     excerptSpan.className = "custom-excerpt";
     if (msgId) excerptSpan.dataset.msgId = msgId;
     excerptSpan.style.cssText =
@@ -274,11 +283,17 @@ function addExcerptToCard(
     excerptSpan.textContent = "(Loading excerpt...)";
 
     // Append to the subject container so it appears natively inline
-    const subjectContainer = cardElement.querySelector(
-      ".thread-card-subject-container",
-    );
+    let subjectContainer;
+    if (isAttr === "thread-card") {
+      subjectContainer = rowElement.querySelector(
+        ".thread-card-subject-container",
+      );
+    } else if (isAttr === "thread-row") {
+      subjectContainer = rowElement.querySelector(".subject-line");
+    }
+
     if (!subjectContainer) {
-      logMsg("No subject container found for card: " + cardElement.outerHTML);
+      logMsg("No subject container found for row: " + rowElement.outerHTML);
       return;
     }
     subjectContainer.appendChild(excerptSpan);
@@ -341,7 +356,11 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
 
     const memoryCache = new Map();
     const snippetCallbacks = new Map();
-    const extensionState = { fireSnippetRequested: null, fireHeartbeat: null, pendingRequests: new Set() };
+    const extensionState = {
+      fireSnippetRequested: null,
+      fireHeartbeat: null,
+      pendingRequests: new Set(),
+    };
 
     return {
       messageExcerpts: {
@@ -371,8 +390,8 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
               "chrome://messenger/content/messenger.xul",
             ],
             onLoadWindow(win) {
-              logMsg("3-pane window loaded, setting up card view.");
-              setupCardView(
+              logMsg("3-pane window loaded, setting up view.");
+              setupMessageView(
                 win,
                 activeStates,
                 extension,
