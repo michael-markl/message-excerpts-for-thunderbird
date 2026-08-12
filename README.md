@@ -16,6 +16,20 @@ An extension for Thunderbird that displays message excerpts directly in the mess
 - Helps to quickly grasp the content of an email without opening it.
 - Works both with Cards View and Table View.
 
+## Installing
+
+Currently, this add-on can only manually installed:
+
+1.  Download the `addon.xpi` attached to the latest GitHub release
+2.  In Thunderbird, go to `Add-ons and Themes`, `Extensions`
+3.  Click on the gear icon button next to `Manage your extensions` and select `Install Add-on from file...`.
+4.  Select the downloaded `addon.xpi`.
+
+
+As Thunderbird [disallows](https://thunderbird.topicbox.com/groups/addons/T6ff545fb6d479da5/temporary-pause-on-new-experiment-api-add-on-reviews) new submissions of add-ons that use Experiment APIs.
+Since this extension heavily relies on Experiment APIs, it is not expected to be listed on the official Thunderbird extension gallery in the near future.
+
+
 ## Compatibility
 
 - Thunderbird 128 - 153
