@@ -1,6 +1,6 @@
-# Thunderbird Message Excerpts
+# Message Excerpts for Thunderbird
 
-A Thunderbird extension that displays message excerpts directly in the message list after the subject line.
+An extension for Thunderbird that displays message excerpts directly in the message list after the subject line.
 
 |                   Cards View                    |
 | :---------------------------------------------: |
