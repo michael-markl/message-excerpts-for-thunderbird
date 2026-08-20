@@ -35,8 +35,42 @@ const ExtensionSupport =
     .ExtensionSupport;
 
 // =================================================================
-// Helper Functions
+// Helpers
 // =================================================================
+
+/** From https://stackoverflow.com/a/46432113/3245533, under CC BY-SA 4.0 */
+class LRU {
+  constructor(max = 10) {
+    this.max = max;
+    this.cache = new Map();
+  }
+
+  has(key) {
+    return this.cache.has(key);
+  }
+
+  get(key) {
+    let item = this.cache.get(key);
+    if (item !== undefined) {
+      // refresh key
+      this.cache.delete(key);
+      this.cache.set(key, item);
+    }
+    return item;
+  }
+
+  set(key, val) {
+    // refresh key
+    if (this.cache.has(key)) this.cache.delete(key);
+    // evict oldest
+    else if (this.cache.size === this.max) this.cache.delete(this.first());
+    this.cache.set(key, val);
+  }
+
+  first() {
+    return this.cache.keys().next().value;
+  }
+}
 
 function logMsg(msg) {
   if (Services && Services.console) {
@@ -298,15 +332,19 @@ function addExcerptToRow(
     }
     subjectContainer.appendChild(excerptSpan);
 
-    const applyExcerpt = (excerpt) => {
+    const applyExcerpt = (payload) => {
       // Ensure the row wasn't recycled away while waiting
       if (excerptSpan.parentElement) {
-        excerptSpan.textContent = excerpt;
+        if (payload.status === "success") {
+          excerptSpan.textContent = payload.excerpt;
+        } else {
+          excerptSpan.textContent = "(Failed to load excerpt.)";
+        }
       }
     };
 
     if (memoryCache.has(msgId)) {
-      applyExcerpt(memoryCache.get(msgId));
+      applyExcerpt({ status: "success", excerpt: memoryCache.get(msgId) });
       return;
     }
 
@@ -369,7 +407,7 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
     const activeStates = new Set();
     context.extension.activeStates = activeStates;
 
-    const memoryCache = new Map();
+    const memoryCache = new LRU(5000);
     const excerptCallbacks = new Map();
     const extensionState = {
       fireExcerptRequested: null,
@@ -382,13 +420,14 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
         /**
          * Called by background.js to provide the excerpt back to the UI.
          */
-        provideExcerpt(msgId, excerpt) {
-          memoryCache.set(msgId, excerpt);
-          if (memoryCache.size > 5000) memoryCache.clear(); // Prevent infinite growth
+        provideExcerpt(msgId, payload) {
+          if (payload.status === "success") {
+            memoryCache.set(msgId, payload.excerpt);
+          }
 
           if (excerptCallbacks.has(msgId)) {
             const callbacks = excerptCallbacks.get(msgId);
-            callbacks.forEach((cb) => cb(excerpt));
+            callbacks.forEach((cb) => cb(payload));
             excerptCallbacks.delete(msgId);
           }
         },

@@ -18,8 +18,16 @@
             "type": "integer"
           },
           {
-            "name": "excerpt",
-            "type": "string"
+            "name": "payload",
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string"
+              },
+              "excerpt": {
+                "type": "string"
+              }
+            }
           }
         ]
       }

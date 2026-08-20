@@ -67,12 +67,12 @@ async function main() {
         excerpt =
           excerpt.substring(0, 150) + (excerpt.length > 150 ? "..." : "");
 
-        browser.messageExcerpts.provideExcerpt(msgId, excerpt);
+        browser.messageExcerpts.provideExcerpt(msgId, { status: 'success', excerpt });
       } catch (e) {
         console.error("Failed to get excerpt:", e);
         browser.messageExcerpts.provideExcerpt(
           msgId,
-          "(Failed to load excerpt)",
+          { status: 'failed' },
         );
       }
     });
