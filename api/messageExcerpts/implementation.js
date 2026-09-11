@@ -245,7 +245,7 @@ async function setupMessageView(
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ["id", "aria-label", "data-row"],
+    attributeFilter: ["id", "aria-label", "data-row", "data-properties"],
   });
 
   // Initialize existing rows
@@ -273,6 +273,10 @@ function addExcerptToRow(
   const isAttr = rowElement.getAttribute("is");
   if (isAttr !== "thread-card" && isAttr !== "thread-row") {
     logMsg("Not a thread row/card. Outer HTML:" + rowElement.outerHTML);
+    return;
+  }
+  if (rowElement.dataset.properties?.split(/\s+/).includes("dummy")) {
+    rowElement.querySelector(".custom-excerpt")?.remove();
     return;
   }
   try {
