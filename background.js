@@ -20,6 +20,10 @@
  * =====================================================================
  */
 
+// Wake the MV3 background page on every Thunderbird launch. Without this listener,
+// storage.onChanged leaves it asleep until a preference changes. main() initializes it.
+browser.runtime.onStartup.addListener(() => {});
+
 async function main() {
   console.log("Message Excerpt Card View addon starting...");
   try {
@@ -76,6 +80,21 @@ async function main() {
         );
       }
     });
+
+    browser.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === "local" && changes.excerptInThirdRow) {
+        browser.messageExcerpts.setExcerptInThirdRow(
+          changes.excerptInThirdRow.newValue !== false,
+        );
+      }
+    });
+
+    const preferences = await browser.storage.local.get({
+      excerptInThirdRow: true,
+    });
+    await browser.messageExcerpts.setExcerptInThirdRow(
+      preferences.excerptInThirdRow === true,
+    );
 
     // Initialize our experiment
     await browser.messageExcerpts.init();
