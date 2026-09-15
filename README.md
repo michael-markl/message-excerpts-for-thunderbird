@@ -1,10 +1,14 @@
 # Message Excerpts for Thunderbird
 
-An extension for Thunderbird that displays message excerpts directly in the message list after the subject line.
+An extension for Thunderbird that displays message excerpts directly in the message list after the subject line, or optionally in the third row for cards view with 3 rows.
 
-|                   Cards View                    |
+|                2-rows Cards View                |
 | :---------------------------------------------: |
-| ![Cards View](screenshot-card-view-cropped.png) |
+| ![Cards View](screenshot-card-view-2-cropped.png) |
+
+|                3-rows Cards View                |
+| :---------------------------------------------: |
+| ![Cards View](screenshot-card-view-3-cropped.png) |
 
 |                    Table View                    |
 | :----------------------------------------------: |
@@ -15,6 +19,8 @@ An extension for Thunderbird that displays message excerpts directly in the mess
 - Shows a snippet of the email body directly next to the subject in the message list view.
 - Helps to quickly grasp the content of an email without opening it.
 - Works both with Cards View and Table View.
+- Optionally places excerpts in the third row of three-row cards (enabled by default, toggleable in extension preferences).
+
 
 ## Installing
 
@@ -25,10 +31,8 @@ Currently, this add-on can only manually installed:
 3.  Click on the gear icon button next to `Manage your extensions` and select `Install Add-on from file...`.
 4.  Select the downloaded `addon.xpi`.
 
-
 As Thunderbird [disallows](https://thunderbird.topicbox.com/groups/addons/T6ff545fb6d479da5/temporary-pause-on-new-experiment-api-add-on-reviews) new submissions of add-ons that use Experiment APIs.
 Since this extension heavily relies on Experiment APIs, it is not expected to be listed on the official Thunderbird extension gallery in the near future.
-
 
 ## Compatibility
 

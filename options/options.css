@@ -1,0 +1,21 @@
+:root {
+  color-scheme: light dark;
+  font: menu;
+  background: Canvas;
+  color: CanvasText;
+}
+
+body {
+  margin: 1.5em;
+  max-width: 48em;
+}
+
+label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5em;
+}
+
+p {
+  margin-inline-start: 2em;
+}

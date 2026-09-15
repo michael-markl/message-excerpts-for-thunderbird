@@ -3,6 +3,17 @@
     "namespace": "messageExcerpts",
     "functions": [
       {
+        "name": "setExcerptInThirdRow",
+        "type": "function",
+        "async": true,
+        "parameters": [
+          {
+            "name": "enabled",
+            "type": "boolean"
+          }
+        ]
+      },
+      {
         "name": "init",
         "type": "function",
         "async": true,

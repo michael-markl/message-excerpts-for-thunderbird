@@ -78,6 +78,58 @@ function logMsg(msg) {
   }
 }
 
+const ROW_SELECTOR = 'tr[is="thread-card"], tr[is="thread-row"]';
+
+function installExcerptStyles(container) {
+  if (container.querySelector(".custom-excerpt-styles")) return;
+  const document = container.ownerDocument || container;
+  const style = document.createElement("style");
+  style.className = "custom-excerpt-styles";
+  style.textContent = `
+    #threadTree:not(.cards-row-compact) .thread-card-dynamic-row.custom-excerpt-third-row {
+      grid-template: "subject subject subject" max-content
+                     "button excerpt info" minmax(auto, 1fr) / auto minmax(0, 1fr) auto !important;
+    }
+    .custom-excerpt {
+      margin-inline-start: 8px;
+      color: GrayText;
+      font-size: 0.9em;
+      text-overflow: ellipsis;
+    }
+    .custom-excerpt-third-row > .custom-excerpt {
+      grid-area: excerpt;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      margin-inline-start: 0;
+    }
+  `;
+  (container.head || container).appendChild(style);
+}
+
+function placeExcerpt(rowElement, excerptSpan, extensionState) {
+  const isCard = rowElement.getAttribute("is") === "thread-card";
+  const subject = rowElement.querySelector(
+    isCard ? ".thread-card-subject-container" : ".subject-line",
+  );
+  const dynamicRow = isCard
+    ? rowElement.querySelector(".thread-card-dynamic-row")
+    : null;
+  const tree = rowElement.closest("#threadTree");
+  const useThirdRow = !!(
+    extensionState.excerptInThirdRow &&
+    dynamicRow &&
+    tree &&
+    !tree.classList.contains("cards-row-compact")
+  );
+  if (dynamicRow) {
+    dynamicRow.classList.toggle("custom-excerpt-third-row", useThirdRow);
+  }
+  const target = useThirdRow ? dynamicRow : subject;
+  if (!target) return;
+  if (excerptSpan.parentElement !== target) target.appendChild(excerptSpan);
+}
+
 /**
  * Recursively searches for the shadow DOM container that holds the message rows.
  * Thunderbird uses a deep Shadow DOM hierarchy, so we must traverse through elements.
@@ -86,9 +138,7 @@ function findShadowContainerWithRows(root) {
   if (!root) return null;
 
   try {
-    const cards = Array.from(
-      root.querySelectorAll('tr[is="thread-card"], tr[is="thread-row"]'),
-    );
+    const cards = Array.from(root.querySelectorAll(ROW_SELECTOR));
     if (cards.length > 0) return { root: root, cards: cards };
   } catch (e) {}
 
@@ -122,6 +172,12 @@ function removeAllExcerpts(rootNode) {
   const excerpts = rootNode.querySelectorAll(".custom-excerpt");
   for (let i = 0; i < excerpts.length; i++) {
     excerpts[i].remove();
+  }
+  for (const style of rootNode.querySelectorAll(".custom-excerpt-styles")) {
+    style.remove();
+  }
+  for (const row of rootNode.querySelectorAll(".custom-excerpt-third-row")) {
+    row.classList.remove("custom-excerpt-third-row");
   }
 
   const iframes = rootNode.querySelectorAll("iframe, browser");
@@ -182,10 +238,23 @@ async function setupMessageView(
   memoryCache,
 ) {
   const foundData = await waitForRowsContainer(win);
+  if (!foundData || win.closed) return;
   const state = { observer: null, timer: null, win: win };
   activeStates.add(state);
 
   const container = foundData.root;
+  installExcerptStyles(container);
+  state.refresh = () => {
+    for (const row of container.querySelectorAll(ROW_SELECTOR)) {
+      addExcerptToRow(
+        row,
+        extension,
+        excerptCallbacks,
+        extensionState,
+        memoryCache,
+      );
+    }
+  };
 
   // Keep the Event Page alive by firing a dummy request every 10 seconds.
   // This prevents Thunderbird MV3 from suspending the background script,
@@ -209,9 +278,7 @@ async function setupMessageView(
             if (isAttr === "thread-card" || isAttr === "thread-row") {
               cardsToUpdate.add(node);
             } else if (node.querySelectorAll) {
-              const cards = node.querySelectorAll(
-                'tr[is="thread-card"], tr[is="thread-row"]',
-              );
+              const cards = node.querySelectorAll(ROW_SELECTOR);
               cards.forEach((c) => cardsToUpdate.add(c));
             }
           }
@@ -223,9 +290,7 @@ async function setupMessageView(
           if (isAttr === "thread-card" || isAttr === "thread-row") {
             cardsToUpdate.add(node);
           } else {
-            const card = node.closest(
-              'tr[is="thread-card"], tr[is="thread-row"]',
-            );
+            const card = node.closest(ROW_SELECTOR);
             if (card) cardsToUpdate.add(card);
           }
         }
@@ -247,16 +312,7 @@ async function setupMessageView(
     attributes: true,
     attributeFilter: ["id", "aria-label", "data-row", "data-properties"],
   });
-
-  // Initialize existing rows
-  for (const card of foundData.cards)
-    addExcerptToRow(
-      card,
-      extension,
-      excerptCallbacks,
-      extensionState,
-      memoryCache,
-    );
+  state.refresh();
 }
 
 /**
@@ -307,6 +363,7 @@ function addExcerptToRow(
     const existingExcerpt = rowElement.querySelector(".custom-excerpt");
     if (existingExcerpt) {
       if (existingExcerpt.dataset.msgId === String(msgId)) {
+        placeExcerpt(rowElement, existingExcerpt, extensionState);
         return; // This row already has the correct excerpt.
       }
       existingExcerpt.remove(); // Stale excerpt from a recycled row. Delete it.
@@ -316,25 +373,13 @@ function addExcerptToRow(
     const excerptSpan = rowElement.ownerDocument.createElement("span");
     excerptSpan.className = "custom-excerpt";
     if (msgId) excerptSpan.dataset.msgId = msgId;
-    excerptSpan.style.cssText =
-      "margin-left: 8px; color: GrayText; font-size: 0.9em; text-overflow: ellipsis;";
     excerptSpan.textContent = "(Loading excerpt...)";
 
-    // Append to the subject container so it appears natively inline
-    let subjectContainer;
-    if (isAttr === "thread-card") {
-      subjectContainer = rowElement.querySelector(
-        ".thread-card-subject-container",
-      );
-    } else if (isAttr === "thread-row") {
-      subjectContainer = rowElement.querySelector(".subject-line");
-    }
-
-    if (!subjectContainer) {
+    placeExcerpt(rowElement, excerptSpan, extensionState);
+    if (!excerptSpan.parentElement) {
       logMsg("No subject container found for row: " + rowElement.outerHTML);
       return;
     }
-    subjectContainer.appendChild(excerptSpan);
 
     const applyExcerpt = (payload) => {
       // Ensure the row wasn't recycled away while waiting
@@ -403,6 +448,9 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
       }
       this.extension.activeStates.clear();
     }
+
+    // Experiment code is cached across add-on updates unless invalidated.
+    Services.obs.notifyObservers(null, "startupcache-invalidate", null);
   }
 
   getAPI(context) {
@@ -417,10 +465,15 @@ this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
       fireExcerptRequested: null,
       fireHeartbeat: null,
       pendingRequests: new Set(),
+      excerptInThirdRow: true,
     };
 
     return {
       messageExcerpts: {
+        setExcerptInThirdRow(enabled) {
+          extensionState.excerptInThirdRow = enabled;
+          for (const state of activeStates) state.refresh();
+        },
         /**
          * Called by background.js to provide the excerpt back to the UI.
          */
