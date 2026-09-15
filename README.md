@@ -36,11 +36,11 @@ Since this extension heavily relies on Experiment APIs, it is not expected to be
 
 ## Compatibility
 
-- Thunderbird 128 - 153
+- Thunderbird 128 - 155+
 
 Tested versions:
 
-- Thunderbird 153
+- 153, 154, 155
 
 ## Building
 
