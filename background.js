@@ -20,88 +20,54 @@
  * =====================================================================
  */
 
-// Wake the MV3 background page on every Thunderbird launch. Without this listener,
-// storage.onChanged leaves it asleep until a preference changes. main() initializes it.
+// Register wake-capable listeners synchronously on every event-page execution.
+// onStartup ensures the UI is installed even before the first excerpt request.
 browser.runtime.onStartup.addListener(() => {});
 
-async function main() {
-  console.log("Message Excerpt Card View addon starting...");
+browser.messageExcerpts.onExcerptRequested.addListener(async (msgId, attemptId) => {
+  let payload;
   try {
-    browser.messageExcerpts.onHeartbeat.addListener(() => {
-      // Just receiving this event keeps the Event Page alive. No action needed.
-    });
-
-    const getPartsWithRetry = async (id, maxRetries = 5) => {
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          return await browser.messages.listInlineTextParts(id);
-        } catch (err) {
-          if (attempt === maxRetries - 1) throw err;
-          const baseDelay = 100 + Math.random() * 100; // Random base between 100ms and 200ms
-          const delayMs = Math.pow(2, attempt) * baseDelay;
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-        }
+    // The Experiment owns retries and backoff across background lifetimes.
+    const parts = await browser.messages.listInlineTextParts(msgId);
+    let excerpt = "";
+    const plain = parts?.find(part => part.contentType === "text/plain");
+    if (plain?.content) {
+      excerpt = plain.content;
+    } else {
+      const html = parts?.find(part => part.contentType === "text/html");
+      if (html?.content) {
+        excerpt = await browser.messengerUtilities.convertToPlainText(html.content);
       }
-    };
-
-    browser.messageExcerpts.onExcerptRequested.addListener(async (msgId) => {
-      try {
-        const parts = await getPartsWithRetry(msgId, 5);
-        let excerpt = "";
-
-        if (parts && parts.length > 0) {
-          // Prefer text/plain if available
-          let part = parts.find((p) => p.contentType === "text/plain");
-          if (part && part.content) {
-            excerpt = part.content;
-          } else {
-            // Fallback to text/html
-            part = parts.find((p) => p.contentType === "text/html");
-            if (part && part.content) {
-              excerpt = await browser.messengerUtilities.convertToPlainText(
-                part.content,
-              );
-            }
-          }
-        }
-
-        // Cleanup excess whitespace and signatures
-        excerpt = excerpt.replace(/\s+/g, " ").trim();
-
-        excerpt =
-          excerpt.substring(0, 150) + (excerpt.length > 150 ? "..." : "");
-
-        browser.messageExcerpts.provideExcerpt(msgId, { status: 'success', excerpt });
-      } catch (e) {
-        console.error("Failed to get excerpt:", e);
-        browser.messageExcerpts.provideExcerpt(
-          msgId,
-          { status: 'failed' },
-        );
-      }
-    });
-
-    browser.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === "local" && changes.excerptInThirdRow) {
-        browser.messageExcerpts.setExcerptInThirdRow(
-          changes.excerptInThirdRow.newValue !== false,
-        );
-      }
-    });
-
-    const preferences = await browser.storage.local.get({
-      excerptInThirdRow: true,
-    });
-    await browser.messageExcerpts.setExcerptInThirdRow(
-      preferences.excerptInThirdRow === true,
-    );
-
-    // Initialize our experiment
-    await browser.messageExcerpts.init();
-    console.log("messageExcerpts init finished.");
-  } catch (err) {
-    console.error("Failed to initialize messageExcerpts API:", err);
+    }
+    excerpt = excerpt.replace(/\s+/g, " ").trim();
+    excerpt = excerpt.substring(0, 150) + (excerpt.length > 150 ? "..." : "");
+    payload = { status: "success", excerpt };
+  } catch (error) {
+    console.error("Failed to get excerpt:", error);
+    payload = { status: "failed" };
   }
-}
+  try {
+    await browser.messageExcerpts.provideExcerpt(attemptId, payload);
+  } catch (error) {
+    // The Experiment retries if the page disappears before a reply arrives.
+    console.error("Failed to deliver excerpt:", error);
+  }
+});
 
-main();
+// Serialize initialization and preference updates so a slow initial read
+// cannot overwrite a newer storage change.
+let settingsUpdate = Promise.resolve().then(async () => {
+  const preferences = await browser.storage.local.get({ excerptInThirdRow: true });
+  await browser.messageExcerpts.setExcerptInThirdRow(preferences.excerptInThirdRow === true);
+  await browser.messageExcerpts.init();
+}).catch(error => console.error("Failed to initialize messageExcerpts API:", error));
+
+browser.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== "local" || !changes.excerptInThirdRow) return;
+  settingsUpdate = settingsUpdate.then(async () => {
+    await browser.messageExcerpts.setExcerptInThirdRow(
+      changes.excerptInThirdRow.newValue !== false,
+    );
+    await browser.messageExcerpts.init();
+  }).catch(error => console.error("Failed to update excerpt preferences:", error));
+});
