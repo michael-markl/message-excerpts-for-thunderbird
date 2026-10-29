@@ -472,9 +472,9 @@ this.messageExcerpts = class extends ExtensionCommon.ExtensionAPIPersistent {
       Promise.resolve().then(() => this.flushBgRequests());
       return {
         unregister: () => {
-          if (this.excerptFetcher !== binding) return;
-          this.excerptFetcher = null;
-          // Lost contexts use the same bounded retry policy as other failures.
+          if (this.excerptFetcher === binding) {
+            this.excerptFetcher = null;
+          }
           for (const attempt of this.bgRequests.values()) {
             attempt.deferred.reject(
               new Error("Binding Fetcher was unregistered."),
@@ -535,7 +535,6 @@ this.messageExcerpts = class extends ExtensionCommon.ExtensionAPIPersistent {
       deferred,
     };
     this.bgRequests.set(attempt.id, attempt);
-    // dispatch errors are not caught, as we allow dispatches to be deferred.
     this.dispatchBgRequest(attempt);
     return await timeout(30000, deferred).finally(() =>
       this.bgRequests.delete(attempt.id),
@@ -551,11 +550,19 @@ this.messageExcerpts = class extends ExtensionCommon.ExtensionAPIPersistent {
   async dispatchBgRequest(attempt) {
     const binding = this.excerptFetcher;
     if (!binding || !attempt || attempt.dispatched) return;
-    attempt.dispatched = true;
-    // A primed event wakes the background. convert() supplies its live fire.
-    if (binding.fire.wakeup) await binding.fire.wakeup();
-    if (this.excerptFetcher !== binding) return;
-    await binding.fire.async(attempt.msgId, attempt.id);
+    try {
+      // A primed event wakes the background. convert() supplies its live fire.
+      if (binding.fire.wakeup) await binding.fire.wakeup();
+      if (this.excerptFetcher !== binding) {
+        throw new Error("Excerpt fetcher was replaced during wakeup.");
+      }
+      await binding.fire.async(attempt.msgId, attempt.id);
+      attempt.dispatched = true;
+    } catch (error) {
+      // Reject the attempt so the request loop retries after backoff, rather
+      // than leaving a dispatched attempt waiting for its 30-second timeout.
+      attempt.deferred.reject(error);
+    }
   }
 
   broadcastPayload(msgId, payload) {
