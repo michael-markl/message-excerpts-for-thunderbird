@@ -21,10 +21,15 @@
 //    and then sends the excerpt back to the UI via `provideExcerpt()`.
 // =====================================================================
 
-const ExtensionAPI =
-  globalThis.ExtensionAPI ||
+const ExtensionCommon =
+  globalThis.ExtensionCommon ||
   ChromeUtils.importESModule("resource://gre/modules/ExtensionCommon.sys.mjs")
-    .ExtensionCommon.ExtensionAPI;
+    .ExtensionCommon;
+
+const { setTimeout, clearTimeout } = ChromeUtils.importESModule(
+  "resource://gre/modules/Timer.sys.mjs",
+);
+
 const Services =
   globalThis.Services ||
   ChromeUtils.importESModule("resource://gre/modules/Services.sys.mjs")
@@ -37,6 +42,39 @@ const ExtensionSupport =
 // =================================================================
 // Helpers
 // =================================================================
+
+class DeferredPromise extends Promise {
+  constructor() {
+    let myResolve, myReject;
+    super((resolve, reject) => {
+      myResolve = resolve;
+      myReject = reject;
+    });
+    this.resolve = myResolve;
+    this.reject = myReject;
+  }
+
+  static get [Symbol.species]() {
+    return Promise;
+  }
+}
+
+class TimeoutError extends Error {}
+
+// Limits waiting, without canceling the underlying operation.
+function timeout(ms, promise) {
+  let timer;
+  const deadline = new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new TimeoutError(`Request timed out after ${ms}ms`));
+    }, ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** From https://stackoverflow.com/a/46432113/3245533, under CC BY-SA 4.0 */
 class LRU {
@@ -238,8 +276,8 @@ async function setupMessageView(
   memoryCache,
 ) {
   const foundData = await waitForRowsContainer(win);
-  if (!foundData || win.closed) return;
-  const state = { observer: null, timer: null, win: win };
+  if (!foundData || win.closed || extensionState.stopped) return;
+  const state = { observer: null, win };
   activeStates.add(state);
 
   const container = foundData.root;
@@ -255,17 +293,6 @@ async function setupMessageView(
       );
     }
   };
-
-  // Keep the Event Page alive by firing a dummy request every 10 seconds.
-  // This prevents Thunderbird MV3 from suspending the background script,
-  // bypassing all the dead-context wakeup bugs!
-  state.timer = win.setInterval(() => {
-    if (extensionState.fireHeartbeat) {
-      try {
-        extensionState.fireHeartbeat.async();
-      } catch (e) {}
-    }
-  }, 10000);
 
   // Mutation Observer: Watches for DOM updates to attributes (row recycling) and children (new cards)
   state.observer = new win.MutationObserver((mutations) => {
@@ -362,17 +389,23 @@ function addExcerptToRow(
     // -------------------------------------------------------------
     const existingExcerpt = rowElement.querySelector(".custom-excerpt");
     if (existingExcerpt) {
-      if (existingExcerpt.dataset.msgId === String(msgId)) {
+      if (
+        existingExcerpt.dataset.msgId === String(msgId) &&
+        existingExcerpt.dataset.status !== "failed"
+      ) {
         placeExcerpt(rowElement, existingExcerpt, extensionState);
-        return; // This row already has the correct excerpt.
+        // This row already has the correct excerpt.
+        return;
       }
-      existingExcerpt.remove(); // Stale excerpt from a recycled row. Delete it.
+      // Stale excerpt from a recycled row. Delete it.
+      existingExcerpt.remove();
     }
 
     // Create the new excerpt element
     const excerptSpan = rowElement.ownerDocument.createElement("span");
     excerptSpan.className = "custom-excerpt";
     if (msgId) excerptSpan.dataset.msgId = msgId;
+    excerptSpan.dataset.status = "loading";
     excerptSpan.textContent = "(Loading excerpt...)";
 
     placeExcerpt(rowElement, excerptSpan, extensionState);
@@ -384,6 +417,7 @@ function addExcerptToRow(
     const applyExcerpt = (payload) => {
       // Ensure the row wasn't recycled away while waiting
       if (excerptSpan.parentElement) {
+        excerptSpan.dataset.status = payload.status;
         if (payload.status === "success") {
           excerptSpan.textContent = payload.excerpt;
         } else {
@@ -398,171 +432,236 @@ function addExcerptToRow(
     }
 
     if (excerptCallbacks.has(msgId)) {
+      // Already actively fetching this excerpt
       excerptCallbacks.get(msgId).push(applyExcerpt);
-      return; // Already actively fetching this excerpt
+      return;
     } else {
       excerptCallbacks.set(msgId, [applyExcerpt]);
     }
 
-    // Emit the request. Background.js will handle fetching.
-    if (extensionState.fireExcerptRequested) {
-      try {
-        extensionState.fireExcerptRequested.async(msgId);
-      } catch (e) {
-        // If the fire object was invalidated by the framework,
-        // we'll catch the error and queue it instead.
-        queueRequest(msgId);
-      }
-    } else {
-      queueRequest(msgId);
-    }
-
-    function queueRequest(id) {
-      extensionState.pendingRequests.add(id);
-      logMsg(
-        "Queued excerpt request for " +
-          id +
-          " because background script is not yet attached.",
-      );
-    }
+    // The Experiment owns requests across background page lifetimes.
+    extensionState.requestExcerpt(msgId);
   } catch (e) {
     logMsg("Failed to add excerpt to card: " + e);
   }
 }
 
-this.messageExcerpts = class messageExcerpts extends ExtensionAPI {
-  onShutdown(isAppShutdown) {
-    if (isAppShutdown) return;
+this.messageExcerpts = class extends ExtensionCommon.ExtensionAPIPersistent {
+  // These fields belong to the Experiment instance, not a background context.
+  activeStates = new Set();
+  pendingWindows = new Set();
+  memoryCache = new LRU(5000);
+  excerptCallbacks = new Map();
+  requests = new Map();
+  // Pending background replies, shared across background contexts.
+  bgRequests = new Map();
+  nextAttemptId = 0;
+  initialized = false;
+  excerptFetcher = null;
+  extensionState = {
+    stopped: false,
+    excerptInThirdRow: true,
+    requestExcerpt: (msgId) => this.requestExcerpt(msgId),
+  };
 
-    logMsg("Extension shutting down, forcing cleanup.");
+  PERSISTENT_EVENTS = {
+    onExcerptRequested: ({ fire }) => {
+      const binding = { fire };
+      this.excerptFetcher = binding;
+      // Defer delivery until listener registration has completed.
+      Promise.resolve().then(() => this.flushBgRequests());
+      return {
+        unregister: () => {
+          if (this.excerptFetcher === binding) {
+            this.excerptFetcher = null;
+          }
+          for (const attempt of this.bgRequests.values()) {
+            attempt.deferred.reject(
+              new Error("Binding Fetcher was unregistered."),
+            );
+          }
+        },
+        convert: (newFire) => {
+          binding.fire = newFire;
+        },
+      };
+    },
+  };
 
+  async requestExcerpt(msgId) {
+    if (this.extensionState.stopped || this.requests.has(msgId)) return;
+    const request = {
+      msgId,
+      backoffBase: 100 + Math.random() * 100,
+    };
+    this.requests.set(msgId, request);
     try {
-      ExtensionSupport.unregisterWindowListener(this.extension.id);
-    } catch (e) {}
-
-    if (this.extension && this.extension.activeStates) {
-      for (const state of this.extension.activeStates) {
-        if (state.timer) state.win.clearInterval(state.timer);
-        if (state.observer) state.observer.disconnect();
-        removeAllExcerpts(state.win.document.documentElement);
-      }
-      this.extension.activeStates.clear();
+      const excerpt = await this.runRequest(request);
+      this.memoryCache.set(msgId, excerpt);
+      this.broadcastPayload(msgId, { status: "success", excerpt });
+    } catch (error) {
+      logMsg("Excerpt request failed: " + error);
+      this.broadcastPayload(msgId, { status: "failed" });
+    } finally {
+      this.requests.delete(msgId);
     }
+  }
 
-    // Experiment code is cached across add-on updates unless invalidated.
+  async runRequest(request) {
+    let errors = [];
+    const maxAttempts = 5;
+    for (let attemptNumber = 1; attemptNumber <= maxAttempts; attemptNumber++) {
+      try {
+        return await this.runAttempt(request);
+      } catch (error) {
+        errors.push(error);
+        if (attemptNumber < maxAttempts) {
+          await delay(request.backoffBase * 2 ** (attemptNumber - 1));
+        }
+      }
+    }
+    throw new AggregateError(
+      errors,
+      `Could not retrieve excerpt after ${maxAttempts} attempts.`,
+    );
+  }
+
+  async runAttempt(request) {
+    const deferred = new DeferredPromise();
+    const attempt = {
+      id: ++this.nextAttemptId,
+      dispatched: false,
+      msgId: request.msgId,
+      deferred,
+    };
+    this.bgRequests.set(attempt.id, attempt);
+    this.dispatchBgRequest(attempt);
+    return await timeout(30000, deferred).finally(() =>
+      this.bgRequests.delete(attempt.id),
+    );
+  }
+
+  flushBgRequests() {
+    for (const attempt of this.bgRequests.values()) {
+      this.dispatchBgRequest(attempt);
+    }
+  }
+
+  async dispatchBgRequest(attempt) {
+    const binding = this.excerptFetcher;
+    if (!binding || !attempt || attempt.dispatched) return;
+    try {
+      // A primed event wakes the background. convert() supplies its live fire.
+      if (binding.fire.wakeup) await binding.fire.wakeup();
+      if (this.excerptFetcher !== binding) {
+        throw new Error("Excerpt fetcher was replaced during wakeup.");
+      }
+      await binding.fire.async(attempt.msgId, attempt.id);
+      attempt.dispatched = true;
+    } catch (error) {
+      // Reject the attempt so the request loop retries after backoff, rather
+      // than leaving a dispatched attempt waiting for its 30-second timeout.
+      attempt.deferred.reject(error);
+    }
+  }
+
+  broadcastPayload(msgId, payload) {
+    const callbacks = this.excerptCallbacks.get(msgId) || [];
+    this.excerptCallbacks.delete(msgId);
+    for (const callback of callbacks) {
+      try {
+        callback(payload);
+      } catch (error) {
+        logMsg("Could not update excerpt row: " + error);
+      }
+    }
+  }
+
+  setupWindow(win) {
+    if (
+      this.extensionState.stopped ||
+      this.pendingWindows.has(win) ||
+      [...this.activeStates].some((state) => state.win === win)
+    )
+      return;
+    this.pendingWindows.add(win);
+    setupMessageView(
+      win,
+      this.activeStates,
+      this.extension,
+      this.excerptCallbacks,
+      this.extensionState,
+      this.memoryCache,
+    )
+      .catch((error) => logMsg("Could not set up message view: " + error))
+      .finally(() => this.pendingWindows.delete(win));
+  }
+
+  init() {
+    if (this.initialized || this.extensionState.stopped) return;
+    ExtensionSupport.registerWindowListener(this.extension.id, {
+      chromeURLs: [
+        "chrome://messenger/content/messenger.xhtml",
+        "chrome://messenger/content/messenger.xul",
+      ],
+      onLoadWindow: (win) => this.setupWindow(win),
+      onUnloadWindow: (win) => {
+        for (const state of this.activeStates) {
+          if (state.win === win) {
+            state.observer?.disconnect();
+            this.activeStates.delete(state);
+          }
+        }
+        removeAllExcerpts(win.document.documentElement);
+      },
+    });
+    this.initialized = true;
+  }
+
+  onShutdown(isAppShutdown) {
+    this.extensionState.stopped = true;
+    this.requests.clear();
+    this.bgRequests.clear();
+    this.excerptCallbacks.clear();
+    this.excerptFetcher = null;
+    if (isAppShutdown) return;
+    if (this.initialized) {
+      ExtensionSupport.unregisterWindowListener(this.extension.id);
+    }
+    for (const state of this.activeStates) {
+      state.observer?.disconnect();
+      removeAllExcerpts(state.win.document.documentElement);
+    }
+    this.activeStates.clear();
+    this.pendingWindows.clear();
     Services.obs.notifyObservers(null, "startupcache-invalidate", null);
   }
 
   getAPI(context) {
-    const extension = context.extension;
-
-    const activeStates = new Set();
-    context.extension.activeStates = activeStates;
-
-    const memoryCache = new LRU(5000);
-    const excerptCallbacks = new Map();
-    const extensionState = {
-      fireExcerptRequested: null,
-      fireHeartbeat: null,
-      pendingRequests: new Set(),
-      excerptInThirdRow: true,
-    };
-
     return {
       messageExcerpts: {
-        setExcerptInThirdRow(enabled) {
-          extensionState.excerptInThirdRow = enabled;
-          for (const state of activeStates) state.refresh();
+        setExcerptInThirdRow: (enabled) => {
+          this.extensionState.excerptInThirdRow = enabled;
+          for (const state of this.activeStates) state.refresh();
         },
-        /**
-         * Called by background.js to provide the excerpt back to the UI.
-         */
-        provideExcerpt(msgId, payload) {
-          if (payload.status === "success") {
-            memoryCache.set(msgId, payload.excerpt);
-          }
-
-          if (excerptCallbacks.has(msgId)) {
-            const callbacks = excerptCallbacks.get(msgId);
-            callbacks.forEach((cb) => cb(payload));
-            excerptCallbacks.delete(msgId);
+        provideExcerpt: (bgRequestId, payload) => {
+          const bgRequest = this.bgRequests.get(bgRequestId);
+          if (!bgRequest) return;
+          if (
+            payload.status === "success" &&
+            typeof payload.excerpt === "string"
+          ) {
+            bgRequest.deferred.resolve(payload.excerpt);
+          } else {
+            bgRequest.deferred.reject(new Error("Background request failed"));
           }
         },
-
-        /**
-         * Initializes the UI modifications and hooks into Thunderbird's DOM.
-         */
-        async init() {
-          logMsg("init() called in backend!");
-
-          ExtensionSupport.registerWindowListener(extension.id, {
-            chromeURLs: [
-              "chrome://messenger/content/messenger.xhtml",
-              "chrome://messenger/content/messenger.xul",
-            ],
-            onLoadWindow(win) {
-              logMsg("3-pane window loaded, setting up view.");
-              setupMessageView(
-                win,
-                activeStates,
-                extension,
-                excerptCallbacks,
-                extensionState,
-                memoryCache,
-              );
-            },
-            onUnloadWindow(win) {
-              logMsg("Unloading extension from window.");
-              for (const state of activeStates) {
-                // If it's the exact same wrapper, or we just want to clear everything
-                if (state.win === win) {
-                  if (state.timer) win.clearInterval(state.timer);
-                  if (state.observer) state.observer.disconnect();
-                  activeStates.delete(state);
-                }
-              }
-
-              removeAllExcerpts(win.document.documentElement);
-            },
-          });
-
-          return Promise.resolve("Backend initialized.");
-        },
-
-        /**
-         * EventManager that bridges communication to background.js
-         */
+        init: () => this.init(),
         onExcerptRequested: new ExtensionCommon.EventManager({
           context,
-          name: "messageExcerpts.onExcerptRequested",
-          register(fire) {
-            logMsg("Excerpt request listener registered by background script!");
-            extensionState.fireExcerptRequested = fire;
-
-            // Flush any requests that came in before registration
-            for (const msgId of extensionState.pendingRequests) {
-              fire.async(msgId);
-            }
-            extensionState.pendingRequests.clear();
-
-            return () => {
-              logMsg(
-                "Excerpt request listener cleanup called (Event Page suspended).",
-              );
-              extensionState.fireExcerptRequested = null;
-            };
-          },
-        }).api(),
-
-        onHeartbeat: new ExtensionCommon.EventManager({
-          context,
-          name: "messageExcerpts.onHeartbeat",
-          register(fire) {
-            extensionState.fireHeartbeat = fire;
-            return () => {
-              extensionState.fireHeartbeat = null;
-            };
-          },
+          module: "messageExcerpts",
+          event: "onExcerptRequested",
+          extensionApi: this,
         }).api(),
       },
     };

@@ -25,7 +25,7 @@
         "async": true,
         "parameters": [
           {
-            "name": "msgId",
+            "name": "requestId",
             "type": "integer"
           },
           {
@@ -36,7 +36,8 @@
                 "type": "string"
               },
               "excerpt": {
-                "type": "string"
+                "type": "string",
+                "optional": true
               }
             }
           }
@@ -51,13 +52,12 @@
           {
             "name": "msgId",
             "type": "integer"
+          },
+          {
+            "name": "requestId",
+            "type": "integer"
           }
         ]
-      },
-      {
-        "name": "onHeartbeat",
-        "type": "function",
-        "parameters": []
       }
     ]
   }
